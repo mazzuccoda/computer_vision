@@ -1,0 +1,9 @@
+__pycache__
+*.pyc
+.git
+media/imagenes
+*.sqlite3
+.env
+models/*.pt
+.dockerignore
+Dockerfile

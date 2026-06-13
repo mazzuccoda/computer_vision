@@ -47,6 +47,29 @@ arrancar (`python manage.py seed_demo`):
 - Usuario: `admin`
 - Contraseña: `admin12345`
 
+## Despliegue con Portainer (imágenes prebuilt)
+
+Para no compilar las imágenes en el servidor (útil en minipc / equipos con poca
+RAM), un workflow de GitHub Actions publica las imágenes en GHCR en cada push a
+`main`:
+
+- `ghcr.io/mazzuccoda/computer_vision-backend:latest`
+- `ghcr.io/mazzuccoda/computer_vision-frontend:latest`
+
+En Portainer, crear un stack desde **Repository**:
+
+- Repository URL: `https://github.com/mazzuccoda/computer_vision`
+- Repository reference: `refs/heads/main`
+- Compose path: `docker-compose.prod.yml`  ← usa `image:` (descarga), no `build:`
+
+Cargar las variables de entorno necesarias (ver `backend/.env.example`); todas
+tienen defaults sanos. Para acceso desde fuera del host, ajustar
+`DJANGO_ALLOWED_HOSTS`, `CORS_ALLOWED_ORIGINS` y `NEXT_PUBLIC_API_URL`.
+
+Si los paquetes GHCR son privados, configurar en Portainer un registry
+`ghcr.io` con usuario + Personal Access Token (scope `read:packages`), o hacer
+públicos los paquetes desde GitHub.
+
 ## Modelo YOLO
 
 `backend/services/yolo_service.py` carga `backend/models/best.pt` si existe; de

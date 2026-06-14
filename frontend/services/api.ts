@@ -1,7 +1,7 @@
 import axios, { AxiosInstance } from "axios";
 
 const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+  process.env.NEXT_PUBLIC_API_URL || "http://localhost:8001";
 
 const api: AxiosInstance = axios.create({
   baseURL: `${API_BASE_URL}/api`,

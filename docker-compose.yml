@@ -123,8 +123,11 @@ services:
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
 
-  frontend:
-    build: ./frontend
+ frontend:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:8001
     ports:
       - "${FRONTEND_PORT:-3000}:3000"
     depends_on:

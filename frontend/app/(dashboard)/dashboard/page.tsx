@@ -1,6 +1,7 @@
 "use client";
 
-import { Layers, Leaf, MapPin, Plane } from "lucide-react";
+import { BrainCircuit, Layers, Leaf, MapPin, Plane } from "lucide-react";
+import Link from "next/link";
 
 import { LoadingSpinner } from "@/components/shared/LoadingSpinner";
 import {
@@ -10,9 +11,12 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { useDashboardStats } from "@/hooks/useDashboard";
+import { useModelos } from "@/hooks/useModelos";
 
 export default function DashboardPage() {
   const { data, isLoading } = useDashboardStats();
+  const { data: modelos } = useModelos();
+  const modeloActivo = modelos?.results.find((m) => m.activo);
 
   if (isLoading) return <LoadingSpinner />;
 
@@ -91,6 +95,36 @@ export default function DashboardPage() {
           </CardContent>
         </Card>
       </div>
+
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+          <CardTitle className="text-base">Modelo activo</CardTitle>
+          <BrainCircuit className="h-4 w-4 text-primary" />
+        </CardHeader>
+        <CardContent>
+          {modeloActivo ? (
+            <Link
+              href={`/modelos/${modeloActivo.id}`}
+              className="hover:underline"
+            >
+              <span className="text-xl font-bold">
+                {modeloActivo.nombre} {modeloActivo.version}
+              </span>
+              <span className="ml-2 text-sm text-muted-foreground">
+                mAP50 {modeloActivo.metricas?.map50?.toFixed(3) ?? "—"}
+              </span>
+            </Link>
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              Ninguno activo — se usa el modelo genérico (yolov8n).{" "}
+              <Link href="/modelos" className="underline">
+                Entrená uno
+              </Link>
+              .
+            </p>
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
 }

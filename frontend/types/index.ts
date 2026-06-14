@@ -68,6 +68,60 @@ export interface AuthTokens {
   refresh: string;
 }
 
+export interface DatasetEntrenamiento {
+  id: number;
+  nombre: string;
+  archivo: string;
+  formato: "yolo" | "cvat_xml" | "coco";
+  num_imagenes: number;
+  clases: string[];
+  estado: "subido" | "validando" | "valido" | "invalido";
+  reporte_validacion: {
+    total_imagenes?: number;
+    total_anotaciones?: number;
+    distribucion_por_clase?: Record<string, number>;
+    warnings?: string[];
+    error?: string;
+  };
+  creado_en: string;
+}
+
+export interface ModeloEntrenado {
+  id: number;
+  nombre: string;
+  version: string;
+  dataset: number;
+  dataset_nombre?: string;
+  base_model: "yolov8n.pt" | "yolov8s.pt" | "yolov8m.pt";
+  epochs: number;
+  img_size: number;
+  patience: number;
+  estado: "pendiente" | "preparando" | "entrenando" | "completado" | "error";
+  epoca_actual: number;
+  porcentaje: number;
+  metricas: {
+    map50?: number;
+    map50_95?: number;
+    precision?: number;
+    recall?: number;
+    fitness?: number;
+  };
+  archivo_pesos: string | null;
+  activo: boolean;
+  notas: string;
+  error_mensaje: string;
+  creado_en: string;
+  completado_en: string | null;
+}
+
+export interface ModeloResults {
+  metricas: ModeloEntrenado["metricas"];
+  imagenes: Record<string, string>;
+  porcentaje: number;
+  epoca_actual: number;
+  epochs: number;
+}
+
 export interface DashboardStats {
   total_campos: number;
   total_modulos: number;

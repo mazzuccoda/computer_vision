@@ -38,6 +38,7 @@ THIRD_PARTY_APPS = [
 
 LOCAL_APPS = [
     "apps.vision",
+    "apps.training",
 ]
 
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
@@ -169,6 +170,12 @@ CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
 CELERY_TIMEZONE = TIME_ZONE
 CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
+
+# El entrenamiento YOLO satura CPU/RAM; se enruta a una cola dedicada
+# "training" con un worker de concurrencia 1 (ver docker-compose).
+CELERY_TASK_ROUTES = {
+    "apps.training.tasks.train_model_task": {"queue": "training"},
+}
 
 # --------------------------------------------------------------------------
 # CORS

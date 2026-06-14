@@ -80,6 +80,23 @@ services:
     environment:
       <<: *backend-env
 
+  celery_worker_training:
+    build: ./backend
+    pull_policy: build
+    # Cola dedicada "training", concurrencia 1: el entrenamiento YOLOv8
+    # satura CPU/RAM y no debe competir con la inferencia de vuelos.
+    command: celery -A config worker -l info -Q training --concurrency=1
+    depends_on:
+      backend:
+        condition: service_started
+      redis:
+        condition: service_healthy
+    volumes:
+      - media_data:/app/media
+      - models_data:/app/models
+    environment:
+      <<: *backend-env
+
   celery_beat:
     build: ./backend
     pull_policy: build

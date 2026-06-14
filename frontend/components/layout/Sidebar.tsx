@@ -1,6 +1,6 @@
 "use client";
 
-import { LayoutDashboard, Layers, MapPin, Plane } from "lucide-react";
+import { BrainCircuit, LayoutDashboard, Layers, MapPin, Plane } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
@@ -11,6 +11,7 @@ const navItems = [
   { href: "/campos", label: "Campos", icon: MapPin },
   { href: "/modulos", label: "Módulos", icon: Layers },
   { href: "/vuelos", label: "Vuelos", icon: Plane },
+  { href: "/modelos", label: "Modelos", icon: BrainCircuit },
 ];
 
 export function Sidebar() {

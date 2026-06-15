@@ -39,6 +39,7 @@ THIRD_PARTY_APPS = [
 LOCAL_APPS = [
     "apps.vision",
     "apps.training",
+    "apps.converter",
 ]
 
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
@@ -175,6 +176,7 @@ CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
 # "training" con un worker de concurrencia 1 (ver docker-compose).
 CELERY_TASK_ROUTES = {
     "apps.training.tasks.train_model_task": {"queue": "training"},
+    "apps.converter.tasks.convert_tiff_task": {"queue": "conversion"},
 }
 
 # --------------------------------------------------------------------------

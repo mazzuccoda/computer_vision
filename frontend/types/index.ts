@@ -130,3 +130,64 @@ export interface DashboardStats {
   vuelos_procesados_hoy: number;
   vuelos_procesando: number;
 }
+
+export interface MetadatosGeo {
+  crs?: string;
+  bounds?: {
+    west: number;
+    south: number;
+    east: number;
+    north: number;
+  };
+  ancho_px?: number;
+  alto_px?: number;
+  bandas?: number;
+  res_m_per_px?: number;
+  tile_size?: number;
+  overlap_px?: number;
+  tiles?: Array<{
+    nombre: string;
+    fila: number;
+    col: number;
+    pixel_x: number;
+    pixel_y: number;
+    bbox_geo: { west: number; south: number; east: number; north: number };
+  }>;
+}
+
+export interface SesionConversion {
+  id: number;
+  nombre: string;
+  fuente: "upload" | "vuelo";
+  archivo_tiff: string | null;
+  imagen_vuelo: number | null;
+  imagen_vuelo_nombre: string | null;
+  tile_size: number;
+  overlap_px: number;
+  calidad_jpg: number;
+  saltar_vacios: boolean;
+  estado: "pendiente" | "procesando" | "completado" | "error";
+  total_tiles: number;
+  tiles_procesados: number;
+  porcentaje: number;
+  error_mensaje: string;
+  metadatos_geo: MetadatosGeo;
+  directorio_tiles: string;
+  archivo_zip: string | null;
+  notas: string;
+  nombre_archivo_fuente: string;
+  creado_en: string;
+  completado_en: string | null;
+}
+
+export type SesionConversionCreate = {
+  nombre: string;
+  fuente: "upload" | "vuelo";
+  archivo_tiff?: File;
+  imagen_vuelo?: number;
+  tile_size: number;
+  overlap_px: number;
+  calidad_jpg: number;
+  saltar_vacios: boolean;
+  notas?: string;
+};

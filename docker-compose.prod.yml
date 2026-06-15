@@ -94,6 +94,22 @@ services:
     environment:
       <<: *backend-env
 
+  celery_worker_converter:
+    image: ${BACKEND_IMAGE:-ghcr.io/mazzuccoda/computer_vision-backend:latest}
+    # Cola dedicada "conversion", concurrencia 2: la conversión de GeoTIFF
+    # a tiles es I/O intensiva y puede paralelizarse más que el entrenamiento.
+    command: celery -A config worker -l info -Q conversion --concurrency=2
+    depends_on:
+      backend:
+        condition: service_started
+      redis:
+        condition: service_healthy
+    volumes:
+      - media_data:/app/media
+      - models_data:/app/models
+    environment:
+      <<: *backend-env
+
   celery_beat:
     image: ${BACKEND_IMAGE:-ghcr.io/mazzuccoda/computer_vision-backend:latest}
     command: celery -A config beat -l info --scheduler django_celery_beat.schedulers:DatabaseScheduler

@@ -1,6 +1,13 @@
 "use client";
 
-import { BrainCircuit, LayoutDashboard, Layers, MapPin, Plane } from "lucide-react";
+import {
+  BrainCircuit,
+  Grid2x2,
+  LayoutDashboard,
+  Layers,
+  MapPin,
+  Plane,
+} from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
@@ -12,6 +19,7 @@ const navItems = [
   { href: "/modulos", label: "Módulos", icon: Layers },
   { href: "/vuelos", label: "Vuelos", icon: Plane },
   { href: "/modelos", label: "Modelos", icon: BrainCircuit },
+  { href: "/converter", label: "Convertir TIFF", icon: Grid2x2 },
 ];
 
 export function Sidebar() {

@@ -5,6 +5,7 @@ import {
   Grid2x2,
   LayoutDashboard,
   Layers,
+  Map,
   MapPin,
   Plane,
 } from "lucide-react";
@@ -18,6 +19,7 @@ const navItems = [
   { href: "/campos", label: "Campos", icon: MapPin },
   { href: "/modulos", label: "Módulos", icon: Layers },
   { href: "/vuelos", label: "Vuelos", icon: Plane },
+  { href: "/mapa", label: "Mapa", icon: Map },
   { href: "/modelos", label: "Modelos", icon: BrainCircuit },
   { href: "/converter", label: "Convertir TIFF", icon: Grid2x2 },
 ];

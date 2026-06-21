@@ -1,6 +1,7 @@
 "use client";
 
 import { zodResolver } from "@hookform/resolvers/zod";
+import dynamic from "next/dynamic";
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
@@ -25,6 +26,13 @@ import {
 import { Input } from "@/components/ui/input";
 import { useCreateCampo, useUpdateCampo } from "@/hooks/useCampos";
 import { Campo } from "@/types";
+
+const MapaPicker = dynamic(() => import("@/components/mapa/MapaPicker"), {
+  ssr: false,
+  loading: () => (
+    <div className="h-[240px] animate-pulse rounded-lg bg-muted" />
+  ),
+});
 
 const schema = z.object({
   nombre: z.string().min(1, "El nombre es requerido"),
@@ -104,7 +112,7 @@ export function CampoForm({ campo, trigger }: CampoFormProps) {
       <DialogTrigger asChild>
         {trigger ?? <Button>Nuevo campo</Button>}
       </DialogTrigger>
-      <DialogContent>
+      <DialogContent className="max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>{isEdit ? "Editar campo" : "Nuevo campo"}</DialogTitle>
         </DialogHeader>
@@ -149,6 +157,30 @@ export function CampoForm({ campo, trigger }: CampoFormProps) {
                 </FormItem>
               )}
             />
+            <div className="space-y-1">
+              <FormLabel>Ubicación en el mapa</FormLabel>
+              <p className="text-xs text-muted-foreground">
+                Hacé clic en el mapa para fijar las coordenadas.
+              </p>
+              <MapaPicker
+                latitud={
+                  form.watch("latitud") === "" ||
+                  form.watch("latitud") === undefined
+                    ? null
+                    : Number(form.watch("latitud"))
+                }
+                longitud={
+                  form.watch("longitud") === "" ||
+                  form.watch("longitud") === undefined
+                    ? null
+                    : Number(form.watch("longitud"))
+                }
+                onPick={(lat, lon) => {
+                  form.setValue("latitud", lat, { shouldValidate: true });
+                  form.setValue("longitud", lon, { shouldValidate: true });
+                }}
+              />
+            </div>
             <div className="grid grid-cols-2 gap-4">
               <FormField
                 control={form.control}

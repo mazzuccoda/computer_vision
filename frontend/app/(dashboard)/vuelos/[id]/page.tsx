@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowLeft, Download, Play } from "lucide-react";
+import { ArrowLeft, Download, Map, Play } from "lucide-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { toast } from "sonner";
@@ -32,7 +32,6 @@ import {
 } from "@/hooks/useVuelos";
 import { vuelosService } from "@/services/vuelos.service";
 
-// TODO FASE 2: Integrar react-leaflet para visualizar detecciones en mapa
 // TODO FASE 3: Agregar panel de comparación histórica entre vuelos
 
 export default function VueloDetallePage() {
@@ -110,10 +109,18 @@ export default function VueloDetallePage() {
             Procesar vuelo
           </Button>
           {vuelo.estado === "completado" && (
-            <Button variant="outline" onClick={handleExport}>
-              <Download className="mr-2 h-4 w-4" />
-              Exportar CSV
-            </Button>
+            <>
+              <Button asChild variant="outline">
+                <Link href={`/vuelos/${id}/mapa`}>
+                  <Map className="mr-2 h-4 w-4" />
+                  Ver en mapa
+                </Link>
+              </Button>
+              <Button variant="outline" onClick={handleExport}>
+                <Download className="mr-2 h-4 w-4" />
+                Exportar CSV
+              </Button>
+            </>
           )}
         </div>
       </div>

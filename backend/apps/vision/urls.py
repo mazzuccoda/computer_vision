@@ -11,6 +11,7 @@ from .views import (
     DeteccionViewSet,
     ImagenViewSet,
     LogoutView,
+    MapaGeneralView,
     ModuloViewSet,
     VueloViewSet,
 )
@@ -27,5 +28,10 @@ urlpatterns = [
     path("auth/refresh/", TokenRefreshView.as_view(), name="refresh"),
     path("auth/logout/", LogoutView.as_view(), name="logout"),
     path("dashboard/stats/", DashboardStatsView.as_view(), name="dashboard-stats"),
+    path(
+        "mapa/campos-y-vuelos/",
+        MapaGeneralView.as_view(),
+        name="mapa-campos-vuelos",
+    ),
     path("", include(router.urls)),
 ]

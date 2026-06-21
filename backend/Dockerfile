@@ -9,10 +9,13 @@ WORKDIR /app
 # System dependencies for OpenCV, Rasterio (GDAL) and Ultralytics
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    binutils \
     libgl1 \
     libglib2.0-0 \
     libgdal-dev \
     gdal-bin \
+    libproj-dev \
+    libgeos-dev \
     curl \
     && rm -rf /var/lib/apt/lists/*
 

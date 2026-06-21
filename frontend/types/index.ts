@@ -56,6 +56,13 @@ export interface Deteccion {
   clase: string;
 }
 
+export interface EstadoVisor {
+  imagenActivaIndex: number;
+  minConfianza: number; // 0.0 – 1.0; slider en el cliente
+  mostrarEtiquetas: boolean;
+  descargando: boolean;
+}
+
 export interface PaginatedResponse<T> {
   count: number;
   next: string | null;

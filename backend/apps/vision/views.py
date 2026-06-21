@@ -20,6 +20,7 @@ from .serializers import (
     VueloSerializer,
 )
 from .tasks import process_vuelo_task
+from services.annotation_service import AnnotationService
 
 # --------------------------------------------------------------------------
 # Auth
@@ -193,6 +194,61 @@ class ImagenViewSet(viewsets.ReadOnlyModelViewSet):
         if vuelo_id:
             qs = qs.filter(vuelo_id=vuelo_id)
         return qs
+
+    @action(detail=True, methods=["get"], url_path="annotated")
+    def annotated(self, request, pk=None):
+        """
+        GET /api/imagenes/{id}/annotated/
+        Genera JPG con bounding boxes usando OpenCV.
+        """
+        imagen = self.get_object()
+
+        if not imagen.procesada:
+            return Response(
+                {"error": "La imagen no ha sido procesada todavía."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            min_conf = float(request.query_params.get("min_confidence", 0.5))
+        except (TypeError, ValueError):
+            min_conf = 0.5
+        min_conf = max(0.0, min(1.0, min_conf))
+        force_dl = (
+            request.query_params.get("download", "false").lower() == "true"
+        )
+
+        detecciones = list(
+            imagen.detecciones.filter(confianza__gte=min_conf).values(
+                "confianza", "x_min", "y_min", "x_max", "y_max", "clase"
+            )
+        )
+
+        try:
+            jpg_bytes = AnnotationService.generar_imagen_anotada(
+                imagen_path=imagen.archivo.path,
+                detecciones=detecciones,
+                min_confidence=min_conf,
+            )
+        except FileNotFoundError as e:
+            return Response(
+                {"error": str(e)}, status=status.HTTP_404_NOT_FOUND
+            )
+        except ValueError as e:
+            return Response(
+                {"error": str(e)}, status=status.HTTP_400_BAD_REQUEST
+            )
+
+        base = imagen.nombre_original.rsplit(".", 1)[0]
+        nombre = f"anotada_{base}.jpg"
+        disposition = "attachment" if force_dl else "inline"
+
+        response = HttpResponse(jpg_bytes, content_type="image/jpeg")
+        response["Content-Disposition"] = (
+            f'{disposition}; filename="{nombre}"'
+        )
+        response["Content-Length"] = len(jpg_bytes)
+        return response
 
 
 class DeteccionViewSet(viewsets.ReadOnlyModelViewSet):

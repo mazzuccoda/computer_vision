@@ -28,7 +28,7 @@ x-backend-env: &backend-env
 
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgis/postgis:16-3.4-alpine
     environment:
       POSTGRES_DB: ${DB_NAME:-vision_db}
       POSTGRES_USER: ${DB_USER:-vision_user}

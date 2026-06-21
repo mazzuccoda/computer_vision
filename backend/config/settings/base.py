@@ -27,10 +27,12 @@ DJANGO_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+    "django.contrib.gis",
 ]
 
 THIRD_PARTY_APPS = [
     "rest_framework",
+    "rest_framework_gis",
     "rest_framework_simplejwt.token_blacklist",
     "corsheaders",
     "django_celery_beat",
@@ -83,7 +85,7 @@ WSGI_APPLICATION = "config.wsgi.application"
 # --------------------------------------------------------------------------
 DATABASES = {
     "default": {
-        "ENGINE": "django.db.backends.postgresql",
+        "ENGINE": "django.contrib.gis.db.backends.postgis",
         "NAME": config("DB_NAME", default="vision_db"),
         "USER": config("DB_USER", default="vision_user"),
         "PASSWORD": config("DB_PASSWORD", default="vision_password"),

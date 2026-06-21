@@ -12,11 +12,14 @@ from rest_framework_simplejwt.tokens import RefreshToken
 
 from .models import Campo, Deteccion, Imagen, Modulo, Vuelo
 from .serializers import (
+    CampoGeoSerializer,
     CampoSerializer,
+    DeteccionMapaSerializer,
     DeteccionSerializer,
     ImagenSerializer,
     ModuloSerializer,
     VueloDetalleSerializer,
+    VueloGeoSerializer,
     VueloSerializer,
 )
 from .tasks import process_vuelo_task
@@ -156,6 +159,31 @@ class VueloViewSet(viewsets.ModelViewSet):
             }
         )
 
+    @action(detail=True, methods=["get"], url_path="detecciones-mapa")
+    def detecciones_mapa(self, request, pk=None):
+        """
+        GET /api/vuelos/{id}/detecciones-mapa/?min_confidence=0.5
+        Devuelve un GeoJSON FeatureCollection con las detecciones
+        georreferenciadas del vuelo, para pintar en el mapa de detalle.
+        """
+        try:
+            min_conf = float(request.query_params.get("min_confidence", 0.5))
+        except (TypeError, ValueError):
+            min_conf = 0.5
+        min_conf = max(0.0, min(1.0, min_conf))
+
+        detecciones = (
+            Deteccion.objects.filter(
+                imagen__vuelo_id=pk,
+                ubicacion__isnull=False,
+                confianza__gte=min_conf,
+            )
+            .select_related("imagen")
+            .order_by("id")
+        )
+        serializer = DeteccionMapaSerializer(detecciones, many=True)
+        return Response(serializer.data)
+
     @action(detail=True, methods=["get"], url_path="export-csv")
     def export_csv(self, request, pk=None):
         vuelo = self.get_object()
@@ -266,6 +294,28 @@ class DeteccionViewSet(viewsets.ReadOnlyModelViewSet):
 # --------------------------------------------------------------------------
 # Dashboard stats
 # --------------------------------------------------------------------------
+
+
+class MapaGeneralView(APIView):
+    """
+    GET /api/mapa/campos-y-vuelos/
+    Devuelve campos y vuelos georreferenciados (GeoJSON) para el mapa
+    principal.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        campos = Campo.objects.filter(punto__isnull=False)
+        vuelos = Vuelo.objects.filter(ubicacion__isnull=False).select_related(
+            "modulo__campo"
+        )
+        return Response(
+            {
+                "campos": CampoGeoSerializer(campos, many=True).data,
+                "vuelos": VueloGeoSerializer(vuelos, many=True).data,
+            }
+        )
 
 
 class DashboardStatsView(APIView):

@@ -1,3 +1,4 @@
+from django.contrib.gis.db import models as gis_models
 from django.db import models
 
 
@@ -5,9 +6,16 @@ class Campo(models.Model):
     nombre = models.CharField(max_length=200)
     descripcion = models.TextField(blank=True)
     ubicacion = models.CharField(max_length=300, blank=True)
-    # TODO FASE 2: Reemplazar latitud/longitud por PointField de PostGIS
+    # latitud/longitud (FloatField) se mantienen como fallback de
+    # compatibilidad; se deprecan, no se eliminan en esta fase.
     latitud = models.FloatField(null=True, blank=True)
     longitud = models.FloatField(null=True, blank=True)
+    punto = gis_models.PointField(
+        null=True,
+        blank=True,
+        srid=4326,
+        help_text="Punto geográfico del campo (WGS84)",
+    )
     creado_en = models.DateTimeField(auto_now_add=True)
     actualizado_en = models.DateTimeField(auto_now=True)
 
@@ -51,6 +59,15 @@ class Vuelo(models.Model):
     total_plantas = models.IntegerField(default=0)
     total_imagenes = models.IntegerField(default=0)
     imagenes_procesadas = models.IntegerField(default=0)
+    ubicacion = gis_models.PointField(
+        null=True,
+        blank=True,
+        srid=4326,
+        help_text=(
+            "Centroide geográfico del vuelo, extraído del GeoTIFF si "
+            "está disponible"
+        ),
+    )
     creado_en = models.DateTimeField(auto_now_add=True)
     actualizado_en = models.DateTimeField(auto_now=True)
 
@@ -95,6 +112,15 @@ class Deteccion(models.Model):
     x_max = models.FloatField()
     y_max = models.FloatField()
     clase = models.CharField(max_length=100, default="planta")
+    ubicacion = gis_models.PointField(
+        null=True,
+        blank=True,
+        srid=4326,
+        help_text=(
+            "Posición geográfica del centro de la detección, calculada "
+            "proyectando coordenadas de píxel sobre el bbox_geo del tile"
+        ),
+    )
 
     def __str__(self) -> str:
         return f"{self.clase} ({self.confianza:.2f})"

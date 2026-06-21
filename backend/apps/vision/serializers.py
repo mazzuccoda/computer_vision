@@ -1,6 +1,18 @@
+from django.contrib.gis.geos import Point
 from rest_framework import serializers
+from rest_framework_gis.serializers import GeoFeatureModelSerializer
 
 from .models import Campo, Deteccion, Imagen, Modulo, Vuelo
+
+
+def _punto_desde_latlon(latitud, longitud) -> Point | None:
+    """Crea un Point WGS84 (lon, lat) a partir de lat/lon planos, o None."""
+    if latitud is None or longitud is None:
+        return None
+    try:
+        return Point(float(longitud), float(latitud), srid=4326)
+    except (TypeError, ValueError):
+        return None
 
 
 class CampoSerializer(serializers.ModelSerializer):
@@ -17,6 +29,22 @@ class CampoSerializer(serializers.ModelSerializer):
             "actualizado_en",
         ]
         read_only_fields = ["id", "creado_en", "actualizado_en"]
+
+    def create(self, validated_data):
+        campo = super().create(validated_data)
+        punto = _punto_desde_latlon(campo.latitud, campo.longitud)
+        if punto:
+            campo.punto = punto
+            campo.save(update_fields=["punto"])
+        return campo
+
+    def update(self, instance, validated_data):
+        campo = super().update(instance, validated_data)
+        punto = _punto_desde_latlon(campo.latitud, campo.longitud)
+        if punto:
+            campo.punto = punto
+            campo.save(update_fields=["punto"])
+        return campo
 
 
 class ModuloSerializer(serializers.ModelSerializer):
@@ -115,3 +143,47 @@ class VueloDetalleSerializer(VueloSerializer):
 
     class Meta(VueloSerializer.Meta):
         fields = VueloSerializer.Meta.fields + ["campo", "campo_nombre"]
+
+
+# --------------------------------------------------------------------------
+# GeoJSON serializers (solo para los endpoints de mapa Leaflet)
+# --------------------------------------------------------------------------
+
+
+class CampoGeoSerializer(GeoFeatureModelSerializer):
+    class Meta:
+        model = Campo
+        geo_field = "punto"
+        fields = ["id", "nombre", "descripcion", "ubicacion"]
+
+
+class VueloGeoSerializer(GeoFeatureModelSerializer):
+    campo = serializers.IntegerField(source="modulo.campo.id", read_only=True)
+    campo_nombre = serializers.CharField(
+        source="modulo.campo.nombre", read_only=True
+    )
+
+    class Meta:
+        model = Vuelo
+        geo_field = "ubicacion"
+        fields = [
+            "id",
+            "nombre",
+            "estado",
+            "total_plantas",
+            "fecha_vuelo",
+            "campo",
+            "campo_nombre",
+        ]
+
+
+class DeteccionMapaSerializer(GeoFeatureModelSerializer):
+    """
+    Serializer liviano para el mapa: solo lo necesario para pintar un
+    marcador, no todos los campos de Deteccion.
+    """
+
+    class Meta:
+        model = Deteccion
+        geo_field = "ubicacion"
+        fields = ["id", "confianza", "clase"]

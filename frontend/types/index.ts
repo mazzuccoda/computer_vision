@@ -63,6 +63,55 @@ export interface EstadoVisor {
   descargando: boolean;
 }
 
+// --------------------------------------------------------------------------
+// GIS / mapas (GeoJSON). OJO: GeoJSON usa [lon, lat]; Leaflet usa [lat, lon].
+// --------------------------------------------------------------------------
+
+export interface GeoPoint {
+  type: "Point";
+  coordinates: [number, number]; // [lon, lat]
+}
+
+export interface GeoFeature<P> {
+  type: "Feature";
+  id?: number;
+  geometry: GeoPoint;
+  properties: P;
+}
+
+export interface GeoFeatureCollection<P> {
+  type: "FeatureCollection";
+  features: Array<GeoFeature<P>>;
+}
+
+export interface CampoMapaProps {
+  id: number;
+  nombre: string;
+  descripcion: string;
+  ubicacion: string;
+}
+
+export interface VueloMapaProps {
+  id: number;
+  nombre: string;
+  estado: Vuelo["estado"];
+  total_plantas: number;
+  fecha_vuelo: string;
+  campo: number | null;
+  campo_nombre: string | null;
+}
+
+export interface DeteccionMapaProps {
+  id: number;
+  confianza: number;
+  clase: string;
+}
+
+export interface MapaGeneralResponse {
+  campos: GeoFeatureCollection<CampoMapaProps>;
+  vuelos: GeoFeatureCollection<VueloMapaProps>;
+}
+
 export interface PaginatedResponse<T> {
   count: number;
   next: string | null;

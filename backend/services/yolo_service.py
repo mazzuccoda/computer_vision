@@ -10,16 +10,16 @@ logger = logging.getLogger(__name__)
 class YOLOService:
     """Singleton wrapper around an Ultralytics YOLO model."""
 
-    _instance = None
-    _model = None
+    _instance: "YOLOService | None" = None
+    _model: YOLO | None = None
 
     @classmethod
-    def get_instance(cls):
+    def get_instance(cls) -> "YOLOService":
         if cls._instance is None:
             cls._instance = cls()
         return cls._instance
 
-    def _load_model(self):
+    def _load_model(self) -> YOLO:
         custom_model = Path(settings.MODELS_PATH) / "best.pt"
         fallback_model = "yolov8n.pt"
 
@@ -29,12 +29,32 @@ class YOLOService:
         return YOLO(model_path)
 
     @property
-    def model(self):
+    def model(self) -> YOLO:
         if self._model is None:
             self._model = self._load_model()
         return self._model
 
-    def process_image_with_yolo(self, image_path: str, confidence: float = 0.5) -> dict:
+    def process_image_with_yolo(
+        self,
+        image_path: str,
+        confidence: float = 0.5,
+    ) -> dict:
+        """
+        Procesa una imagen y retorna detecciones.
+
+        Returns:
+            {
+                'total_detecciones': int,
+                'detecciones': [
+                    {
+                        'confianza': float,
+                        'x_min': float, 'y_min': float,
+                        'x_max': float, 'y_max': float,
+                        'clase': str
+                    }
+                ]
+            }
+        """
         try:
             results = self.model(image_path, conf=confidence)
             detecciones = []
@@ -56,7 +76,9 @@ class YOLOService:
                 "total_detecciones": len(detecciones),
                 "detecciones": detecciones,
             }
-
         except Exception as exc:
             logger.error("Error procesando imagen %s: %s", image_path, exc)
             raise
+
+    # TODO FASE 3: Agregar método process_ndvi() para análisis de índice de vegetación
+    # TODO FASE 4: Agregar método retrain_model() para reentrenamiento con correcciones manuales

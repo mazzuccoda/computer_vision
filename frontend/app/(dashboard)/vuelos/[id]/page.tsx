@@ -24,6 +24,7 @@ import {
 import { EstadoBadge } from "@/components/vuelos/EstadoBadge";
 import { ImageUploader } from "@/components/vuelos/ImageUploader";
 import { ProcessingStatus } from "@/components/vuelos/ProcessingStatus";
+import VisorDetecciones from "@/components/vuelos/VisorDetecciones";
 import {
   useProcessVuelo,
   useVuelo,
@@ -61,6 +62,10 @@ export default function VueloDetallePage() {
       toast.error("No se pudo exportar el CSV");
     }
   }
+
+  const imagenesProcesadas = (imagenes?.results ?? []).filter(
+    (img) => img.procesada,
+  );
 
   const stats = [
     { label: "Total de plantas", value: vuelo.total_plantas },
@@ -127,6 +132,10 @@ export default function VueloDetallePage() {
           </Card>
         ))}
       </div>
+
+      {vuelo.estado === "completado" && imagenesProcesadas.length > 0 && (
+        <VisorDetecciones vueloId={vuelo.id} imagenes={imagenesProcesadas} />
+      )}
 
       <Card>
         <CardHeader>

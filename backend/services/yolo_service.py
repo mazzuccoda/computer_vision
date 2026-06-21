@@ -20,13 +20,45 @@ class YOLOService:
         return cls._instance
 
     def _load_model(self) -> YOLO:
+        # 1. Modelo activo entrenado desde la DB (módulo de entrenamiento).
+        try:
+            from apps.training.models import ModeloEntrenado
+
+            activo = ModeloEntrenado.objects.filter(
+                activo=True, estado="completado"
+            ).first()
+            if activo and activo.archivo_pesos:
+                p = Path(settings.MEDIA_ROOT) / activo.archivo_pesos.name
+                if p.exists():
+                    logger.info("Cargando modelo YOLO activo: %s", p)
+                    return YOLO(str(p))
+        except Exception:
+            pass
+
+        # 2. best.pt local en MODELS_PATH.
         custom_model = Path(settings.MODELS_PATH) / "best.pt"
-        fallback_model = "yolov8n.pt"
+        if custom_model.exists():
+            logger.info("Cargando modelo YOLO desde: %s", custom_model)
+            return YOLO(str(custom_model))
 
-        model_path = str(custom_model) if custom_model.exists() else fallback_model
-        logger.info("Cargando modelo YOLO desde: %s", model_path)
+        # 3. Fallback genérico.
+        logger.info("Cargando modelo YOLO fallback: yolov8n.pt")
+        return YOLO("yolov8n.pt")
 
-        return YOLO(model_path)
+    def reload_model(self) -> None:
+        """Fuerza la recarga del modelo en el próximo acceso a .model."""
+        self._model = None
+
+    def check_reload_signal(self) -> None:
+        """Verifica la señal de recarga en Redis (otro proceso activó un modelo)."""
+        try:
+            from django.core.cache import cache
+
+            if cache.get("yolo_model_reload"):
+                cache.delete("yolo_model_reload")
+                self.reload_model()
+        except Exception:
+            pass
 
     @property
     def model(self) -> YOLO:
@@ -56,6 +88,7 @@ class YOLOService:
             }
         """
         try:
+            self.check_reload_signal()
             results = self.model(image_path, conf=confidence)
             detecciones = []
 

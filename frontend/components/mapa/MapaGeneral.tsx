@@ -113,7 +113,7 @@ export default function MapaGeneral() {
 
         {campos.map((campo) => (
           <Marker
-            key={`campo-${campo.properties.id}`}
+            key={`campo-${campo.id}`}
             position={[
               campo.geometry.coordinates[1],
               campo.geometry.coordinates[0],
@@ -130,7 +130,7 @@ export default function MapaGeneral() {
               ) : null}
               <br />
               <Link
-                href={`/campos/${campo.properties.id}`}
+                href={`/campos/${campo.id}`}
                 className="text-blue-600 underline"
               >
                 Ver campo
@@ -141,7 +141,7 @@ export default function MapaGeneral() {
 
         {vuelos.map((vuelo) => (
           <Marker
-            key={`vuelo-${vuelo.properties.id}`}
+            key={`vuelo-${vuelo.id}`}
             position={[
               vuelo.geometry.coordinates[1],
               vuelo.geometry.coordinates[0],
@@ -155,14 +155,14 @@ export default function MapaGeneral() {
               Plantas: {vuelo.properties.total_plantas}
               <br />
               <Link
-                href={`/vuelos/${vuelo.properties.id}`}
+                href={`/vuelos/${vuelo.id}`}
                 className="text-blue-600 underline"
               >
                 Ver vuelo
               </Link>
               {" · "}
               <Link
-                href={`/vuelos/${vuelo.properties.id}/mapa`}
+                href={`/vuelos/${vuelo.id}/mapa`}
                 className="text-blue-600 underline"
               >
                 Ver detecciones

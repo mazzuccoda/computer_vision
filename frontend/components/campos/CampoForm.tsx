@@ -24,6 +24,7 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { useCreateCampo, useUpdateCampo } from "@/hooks/useCampos";
 import { Campo } from "@/types";
 
@@ -158,7 +159,7 @@ export function CampoForm({ campo, trigger }: CampoFormProps) {
               )}
             />
             <div className="space-y-1">
-              <FormLabel>Ubicación en el mapa</FormLabel>
+              <Label>Ubicación en el mapa</Label>
               <p className="text-xs text-muted-foreground">
                 Hacé clic en el mapa para fijar las coordenadas.
               </p>

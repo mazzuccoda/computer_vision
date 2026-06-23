@@ -362,13 +362,16 @@ class ImagenViewSet(viewsets.ReadOnlyModelViewSet):
 class DeteccionViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = DeteccionSerializer
     permission_classes = [IsAuthenticated]
+    # El visor necesita TODAS las detecciones de una imagen para dibujar los
+    # boxes; sin esto la paginación global (PAGE_SIZE=20) recorta el resultado.
+    pagination_class = None
 
     def get_queryset(self):
         qs = Deteccion.objects.all()
         imagen_id = self.request.query_params.get("imagen_id")
         if imagen_id:
             qs = qs.filter(imagen_id=imagen_id)
-        return qs
+        return qs.order_by("id")
 
 
 # --------------------------------------------------------------------------

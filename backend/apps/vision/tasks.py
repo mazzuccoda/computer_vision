@@ -2,6 +2,7 @@ import logging
 
 from celery import shared_task
 from django.db import transaction
+from django.db.models import Sum
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +117,13 @@ def process_vuelo_task(self, vuelo_id: int) -> dict:
 
         _intentar_georreferenciar_vuelo(vuelo)
 
+        # Recalcular desde la fuente de verdad (suma del conteo por imagen) en
+        # lugar del acumulador del loop. Así el total queda consistente con la
+        # tabla de imágenes aunque el vuelo se reprocese o procese parcialmente
+        # (el loop solo recorre imágenes con procesada=False).
+        total_plantas = (
+            vuelo.imagenes.aggregate(total=Sum("conteo_plantas"))["total"] or 0
+        )
         vuelo.total_plantas = total_plantas
         vuelo.estado = Vuelo.Estado.COMPLETADO
         vuelo.save(update_fields=["total_plantas", "estado"])

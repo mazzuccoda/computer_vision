@@ -42,17 +42,50 @@ export const vuelosService = {
     files: File[],
     onProgress?: (percent: number) => void,
   ): Promise<void> {
-    const formData = new FormData();
-    files.forEach((file) => formData.append("imagenes", file));
+    const chunkMb = Number(process.env.NEXT_PUBLIC_UPLOAD_CHUNK_MB || "20");
+    const chunkSize = Math.max(1, chunkMb) * 1024 * 1024;
+    const totalBytes = files.reduce((sum, f) => sum + f.size, 0) || 1;
+    let uploadedBytes = 0;
 
-    await api.post(`/vuelos/${id}/upload-images/`, formData, {
-      headers: { "Content-Type": "multipart/form-data" },
-      onUploadProgress: (event) => {
-        if (onProgress && event.total) {
-          onProgress(Math.round((event.loaded / event.total) * 100));
+    const report = (base: number, loaded: number) => {
+      if (onProgress) {
+        onProgress(Math.min(100, Math.round(((base + loaded) / totalBytes) * 100)));
+      }
+    };
+
+    for (const file of files) {
+      if (file.size <= chunkSize) {
+        const formData = new FormData();
+        formData.append("imagenes", file);
+        const base = uploadedBytes;
+        await api.post(`/vuelos/${id}/upload-images/`, formData, {
+          headers: { "Content-Type": "multipart/form-data" },
+          onUploadProgress: (event) => report(base, event.loaded),
+        });
+        uploadedBytes += file.size;
+      } else {
+        const uploadId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        const totalChunks = Math.ceil(file.size / chunkSize);
+        for (let index = 0; index < totalChunks; index++) {
+          const start = index * chunkSize;
+          const blob = file.slice(start, start + chunkSize);
+          const fd = new FormData();
+          fd.append("chunk", blob, file.name);
+          fd.append("upload_id", uploadId);
+          fd.append("filename", file.name);
+          fd.append("chunk_index", String(index));
+          fd.append("total_chunks", String(totalChunks));
+          const base = uploadedBytes;
+          await api.post(`/vuelos/${id}/upload-images-chunk/`, fd, {
+            headers: { "Content-Type": "multipart/form-data" },
+            onUploadProgress: (event) => report(base, event.loaded),
+          });
+          uploadedBytes += blob.size;
         }
-      },
-    });
+      }
+    }
+
+    if (onProgress) onProgress(100);
   },
 
   async process(id: number): Promise<void> {

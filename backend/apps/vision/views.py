@@ -1,5 +1,9 @@
 import csv
+import shutil
+from pathlib import Path
 
+from django.conf import settings
+from django.core.files import File
 from django.http import HttpResponse
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
@@ -123,6 +127,82 @@ class VueloViewSet(viewsets.ModelViewSet):
         )
         return Response(
             {"creadas": len(creadas), "imagenes": serializer.data},
+            status=status.HTTP_201_CREATED,
+        )
+
+    @action(
+        detail=True,
+        methods=["post"],
+        url_path="upload-images-chunk",
+        parser_classes=[MultiPartParser, FormParser],
+    )
+    def upload_images_chunk(self, request, pk=None):
+        """Subida por fragmentos para archivos grandes.
+
+        Permite subir GeoTIFF que superan el límite de cuerpo por request de los
+        proxies/CDN (p. ej. Cloudflare corta en 100 MB). El cliente parte el
+        archivo en fragmentos < límite y los envía en orden con el mismo
+        ``upload_id``; al recibir el último se reensamblan y se crea la Imagen.
+        """
+        vuelo = self.get_object()
+        chunk = request.FILES.get("chunk")
+        upload_id = request.data.get("upload_id", "")
+        filename = request.data.get("filename", "")
+        try:
+            index = int(request.data.get("chunk_index"))
+            total = int(request.data.get("total_chunks"))
+        except (TypeError, ValueError):
+            return Response(
+                {"detail": "chunk_index/total_chunks inválidos."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        safe_id = "".join(c for c in upload_id if c.isalnum() or c in "-_")
+        safe_name = Path(filename).name
+        if chunk is None or not safe_id or not safe_name or total < 1:
+            return Response(
+                {"detail": "Faltan datos del fragmento."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        tmp_dir = Path(settings.MEDIA_ROOT) / "tmp_uploads" / safe_id
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        part_path = tmp_dir / f"{index:06d}.part"
+        with open(part_path, "wb") as dest:
+            for piece in chunk.chunks():
+                dest.write(piece)
+
+        if len(list(tmp_dir.glob("*.part"))) < total:
+            return Response(
+                {"detail": "Fragmento recibido.", "recibido": index + 1, "total": total},
+                status=status.HTTP_202_ACCEPTED,
+            )
+
+        assembled = tmp_dir / "assembled"
+        with open(assembled, "wb") as out:
+            for i in range(total):
+                part = tmp_dir / f"{i:06d}.part"
+                if not part.exists():
+                    shutil.rmtree(tmp_dir, ignore_errors=True)
+                    return Response(
+                        {"detail": f"Falta el fragmento {i}; reintentá la subida."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                with open(part, "rb") as pf:
+                    shutil.copyfileobj(pf, out, length=1024 * 1024)
+
+        imagen = Imagen(vuelo=vuelo, nombre_original=safe_name)
+        with open(assembled, "rb") as f:
+            imagen.archivo.save(safe_name, File(f), save=True)
+
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+        vuelo.total_imagenes = vuelo.imagenes.count()
+        vuelo.save(update_fields=["total_imagenes"])
+
+        serializer = ImagenSerializer(imagen, context={"request": request})
+        return Response(
+            {"creadas": 1, "imagenes": [serializer.data]},
             status=status.HTTP_201_CREATED,
         )
 

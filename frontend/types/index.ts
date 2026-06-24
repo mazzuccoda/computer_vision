@@ -105,6 +105,17 @@ export interface DeteccionMapaProps {
   id: number;
   confianza: number;
   clase: string;
+  bbox?: [number, number, number, number]; // [west, south, east, north]
+}
+
+export interface RasterOverlay {
+  imagen_id: number;
+  nombre: string;
+  bounds: [[number, number], [number, number]]; // [[south, west], [north, east]]
+}
+
+export interface RasterOverlayResponse {
+  overlays: RasterOverlay[];
 }
 
 export interface MapaGeneralResponse {

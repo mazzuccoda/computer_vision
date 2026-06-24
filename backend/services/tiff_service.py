@@ -8,6 +8,7 @@ import rasterio
 from django.conf import settings
 from PIL import Image
 from rasterio.crs import CRS
+from rasterio.enums import Resampling
 from rasterio.warp import transform_bounds
 from rasterio.windows import Window
 
@@ -81,6 +82,72 @@ class TiffService:
                 bounds_geo=bounds_geo,
                 res_m_per_px=res_m,
             )
+
+    @staticmethod
+    def generar_preview_web(
+        tiff_path: str,
+        out_path: Path,
+        max_dim: int = 2048,
+        calidad_jpg: int = 85,
+    ) -> dict | None:
+        """
+        Genera un preview JPG reescalado de un GeoTIFF para superponerlo en el
+        mapa (imageOverlay de Leaflet) y devuelve sus bounds WGS84.
+
+        Lee una versión submuestreada con `out_shape`, por lo que funciona con
+        GeoTIFF pesados (100MB–2GB) sin cargarlos enteros en memoria.
+
+        Returns:
+            {"bounds": {west, south, east, north}, "ancho": w, "alto": h}
+            o None si el archivo no es un GeoTIFF georreferenciado.
+        """
+        try:
+            with rasterio.open(tiff_path) as src:
+                if not src.crs:
+                    return None
+
+                escala = min(1.0, max_dim / max(src.width, src.height))
+                out_w = max(1, int(round(src.width * escala)))
+                out_h = max(1, int(round(src.height * escala)))
+                bandas = min(src.count, 3)
+
+                data = src.read(
+                    indexes=list(range(1, bandas + 1)),
+                    out_shape=(bandas, out_h, out_w),
+                    resampling=Resampling.bilinear,
+                )
+                img_rgb = TiffService._bandas_a_rgb(data, bandas)
+                if img_rgb is None:
+                    return None
+
+                bounds = transform_bounds(
+                    src.crs,
+                    CRS.from_epsg(4326),
+                    src.bounds.left,
+                    src.bounds.bottom,
+                    src.bounds.right,
+                    src.bounds.top,
+                )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"No se pudo generar preview del TIFF: {e}")
+            return None
+
+        out_path = Path(out_path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        Image.fromarray(img_rgb).save(
+            str(out_path), "JPEG", quality=calidad_jpg, optimize=True
+        )
+
+        return {
+            "bounds": {
+                "west": bounds[0],
+                "south": bounds[1],
+                "east": bounds[2],
+                "north": bounds[3],
+            },
+            "ancho": out_w,
+            "alto": out_h,
+        }
 
     @staticmethod
     def calcular_total_tiles(

@@ -9,7 +9,12 @@ from django.conf import settings
 from PIL import Image
 from rasterio.crs import CRS
 from rasterio.enums import Resampling
-from rasterio.warp import transform_bounds
+from rasterio.transform import array_bounds
+from rasterio.warp import (
+    calculate_default_transform,
+    reproject,
+    transform_bounds,
+)
 from rasterio.windows import Window
 
 logger = logging.getLogger(__name__)
@@ -84,6 +89,51 @@ class TiffService:
             )
 
     @staticmethod
+    def _grid_4326(src, max_dim: int):
+        """
+        Calcula la grilla de destino EPSG:4326 (north-up) para el preview:
+        (dst_transform, out_w, out_h, src_w, src_h). Compartido por el preview
+        JPG y por los bounds de overlay, para que la imagen y su colocación en
+        Leaflet usen exactamente la misma extensión.
+        """
+        dst_crs = CRS.from_epsg(4326)
+        escala = min(1.0, max_dim / max(src.width, src.height))
+        src_w = max(1, int(round(src.width * escala)))
+        src_h = max(1, int(round(src.height * escala)))
+        dst_transform, out_w, out_h = calculate_default_transform(
+            src.crs,
+            dst_crs,
+            src_w,
+            src_h,
+            left=src.bounds.left,
+            bottom=src.bounds.bottom,
+            right=src.bounds.right,
+            top=src.bounds.top,
+        )
+        return dst_transform, out_w, out_h, src_w, src_h
+
+    @staticmethod
+    def preview_bounds(tiff_path: str, max_dim: int = 2048) -> dict | None:
+        """
+        Devuelve los bounds WGS84 de la grilla del preview (sin generar el JPG),
+        para colocar la ortofoto en el mapa alineada con su imagen reproyectada.
+        """
+        try:
+            with rasterio.open(tiff_path) as src:
+                if not src.crs:
+                    return None
+                dst_transform, out_w, out_h, _, _ = TiffService._grid_4326(
+                    src, max_dim
+                )
+                west, south, east, north = array_bounds(
+                    out_h, out_w, dst_transform
+                )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"No se pudo calcular bounds del preview: {e}")
+            return None
+        return {"west": west, "south": south, "east": east, "north": north}
+
+    @staticmethod
     def generar_preview_web(
         tiff_path: str,
         out_path: Path,
@@ -93,6 +143,12 @@ class TiffService:
         """
         Genera un preview JPG reescalado de un GeoTIFF para superponerlo en el
         mapa (imageOverlay de Leaflet) y devuelve sus bounds WGS84.
+
+        El preview se **reproyecta a EPSG:4326 (north-up)**, por lo que su grilla
+        de píxeles mapea de forma lineal a sus bounds lat/lon. Así Leaflet (que
+        coloca la imagen estirándola entre esquinas) queda alineado con los
+        recuadros de cada detección, que se proyectan píxel→WGS84 con precisión.
+        Sin esto, un GeoTIFF en CRS proyectado (UTM) se vería desfasado.
 
         Lee una versión submuestreada con `out_shape`, por lo que funciona con
         GeoTIFF pesados (100MB–2GB) sin cargarlos enteros en memoria.
@@ -106,27 +162,39 @@ class TiffService:
                 if not src.crs:
                     return None
 
-                escala = min(1.0, max_dim / max(src.width, src.height))
-                out_w = max(1, int(round(src.width * escala)))
-                out_h = max(1, int(round(src.height * escala)))
+                dst_crs = CRS.from_epsg(4326)
+                dst_transform, out_w, out_h, src_w, src_h = (
+                    TiffService._grid_4326(src, max_dim)
+                )
                 bandas = min(src.count, 3)
 
                 data = src.read(
                     indexes=list(range(1, bandas + 1)),
-                    out_shape=(bandas, out_h, out_w),
+                    out_shape=(bandas, src_h, src_w),
                     resampling=Resampling.bilinear,
                 )
                 img_rgb = TiffService._bandas_a_rgb(data, bandas)
                 if img_rgb is None:
                     return None
 
-                bounds = transform_bounds(
-                    src.crs,
-                    CRS.from_epsg(4326),
-                    src.bounds.left,
-                    src.bounds.bottom,
-                    src.bounds.right,
-                    src.bounds.top,
+                src_transform = src.transform * rasterio.Affine.scale(
+                    src.width / src_w, src.height / src_h
+                )
+
+                dst_rgb = np.zeros((out_h, out_w, 3), dtype=np.uint8)
+                for ch in range(3):
+                    reproject(
+                        source=img_rgb[:, :, ch],
+                        destination=dst_rgb[:, :, ch],
+                        src_transform=src_transform,
+                        src_crs=src.crs,
+                        dst_transform=dst_transform,
+                        dst_crs=dst_crs,
+                        resampling=Resampling.bilinear,
+                    )
+
+                west, south, east, north = array_bounds(
+                    out_h, out_w, dst_transform
                 )
         except Exception as e:  # noqa: BLE001
             logger.warning(f"No se pudo generar preview del TIFF: {e}")
@@ -134,16 +202,16 @@ class TiffService:
 
         out_path = Path(out_path)
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        Image.fromarray(img_rgb).save(
+        Image.fromarray(dst_rgb).save(
             str(out_path), "JPEG", quality=calidad_jpg, optimize=True
         )
 
         return {
             "bounds": {
-                "west": bounds[0],
-                "south": bounds[1],
-                "east": bounds[2],
-                "north": bounds[3],
+                "west": west,
+                "south": south,
+                "east": east,
+                "north": north,
             },
             "ancho": out_w,
             "alto": out_h,

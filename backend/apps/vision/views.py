@@ -306,11 +306,16 @@ class VueloViewSet(viewsets.ModelViewSet):
             ref = referencers[imagen.id]
             if ref is None:
                 continue
-            p1 = ref(det.x_min, det.y_min)
-            p2 = ref(det.x_max, det.y_max)
-            if p1 and p2:
-                lons = (p1.x, p2.x)
-                lats = (p1.y, p2.y)
+            esquinas = [
+                ref(det.x_min, det.y_min),
+                ref(det.x_max, det.y_min),
+                ref(det.x_max, det.y_max),
+                ref(det.x_min, det.y_max),
+            ]
+            puntos = [p for p in esquinas if p]
+            if len(puntos) == 4:
+                lons = [p.x for p in puntos]
+                lats = [p.y for p in puntos]
                 bboxes[det.id] = [
                     min(lons),
                     min(lats),
@@ -335,10 +340,9 @@ class VueloViewSet(viewsets.ModelViewSet):
             if not nombre.endswith((".tif", ".tiff")):
                 continue
             try:
-                info = TiffService.leer_info(imagen.archivo.path)
+                b = TiffService.preview_bounds(imagen.archivo.path)
             except Exception:  # noqa: BLE001
                 continue
-            b = info.bounds_geo
             if not b:
                 continue
             overlays.append(

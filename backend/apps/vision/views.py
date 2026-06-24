@@ -1,4 +1,5 @@
 import csv
+import os
 import shutil
 from pathlib import Path
 
@@ -28,6 +29,8 @@ from .serializers import (
 )
 from .tasks import process_vuelo_task
 from services.annotation_service import AnnotationService
+from services.geo_service import GeoService
+from services.tiff_service import TiffService
 
 # --------------------------------------------------------------------------
 # Auth
@@ -252,7 +255,7 @@ class VueloViewSet(viewsets.ModelViewSet):
             min_conf = 0.5
         min_conf = max(0.0, min(1.0, min_conf))
 
-        detecciones = (
+        detecciones = list(
             Deteccion.objects.filter(
                 imagen__vuelo_id=pk,
                 ubicacion__isnull=False,
@@ -262,7 +265,93 @@ class VueloViewSet(viewsets.ModelViewSet):
             .order_by("id")
         )
         serializer = DeteccionMapaSerializer(detecciones, many=True)
-        return Response(serializer.data)
+        data = serializer.data
+
+        # Agregar el bbox geográfico de cada detección (proyectando las
+        # esquinas píxel→WGS84) para poder dibujar recuadros sobre la ortofoto.
+        bboxes = self._bbox_geo_por_deteccion(detecciones)
+        if bboxes:
+            for feature in data.get("features", []):
+                bbox = bboxes.get(feature.get("id"))
+                if bbox:
+                    feature["properties"]["bbox"] = bbox
+
+        return Response(data)
+
+    @staticmethod
+    def _bbox_geo_por_deteccion(detecciones):
+        """
+        Devuelve {deteccion_id: [west, south, east, north]} proyectando las
+        esquinas de cada bounding box píxel→WGS84 con el transform/CRS del
+        GeoTIFF de su imagen. Abre cada GeoTIFF una sola vez.
+        """
+        referencers = {}
+        bboxes = {}
+        for det in detecciones:
+            imagen = det.imagen
+            if imagen.id not in referencers:
+                ref = None
+                nombre = (
+                    imagen.nombre_original or imagen.archivo.name or ""
+                ).lower()
+                if nombre.endswith((".tif", ".tiff")):
+                    try:
+                        ref = GeoService.referencer_desde_tiff(
+                            imagen.archivo.path
+                        )
+                    except Exception:  # noqa: BLE001
+                        ref = None
+                referencers[imagen.id] = ref
+
+            ref = referencers[imagen.id]
+            if ref is None:
+                continue
+            p1 = ref(det.x_min, det.y_min)
+            p2 = ref(det.x_max, det.y_max)
+            if p1 and p2:
+                lons = (p1.x, p2.x)
+                lats = (p1.y, p2.y)
+                bboxes[det.id] = [
+                    min(lons),
+                    min(lats),
+                    max(lons),
+                    max(lats),
+                ]
+        return bboxes
+
+    @action(detail=True, methods=["get"], url_path="raster-overlay")
+    def raster_overlay(self, request, pk=None):
+        """
+        GET /api/vuelos/{id}/raster-overlay/
+        Por cada imagen GeoTIFF georreferenciada del vuelo devuelve los bounds
+        WGS84 para superponer la ortofoto en el mapa (imageOverlay de Leaflet).
+        El preview JPG se sirve por /api/imagenes/{id}/preview/.
+        """
+        overlays = []
+        for imagen in Imagen.objects.filter(vuelo_id=pk):
+            nombre = (
+                imagen.nombre_original or imagen.archivo.name or ""
+            ).lower()
+            if not nombre.endswith((".tif", ".tiff")):
+                continue
+            try:
+                info = TiffService.leer_info(imagen.archivo.path)
+            except Exception:  # noqa: BLE001
+                continue
+            b = info.bounds_geo
+            if not b:
+                continue
+            overlays.append(
+                {
+                    "imagen_id": imagen.id,
+                    "nombre": imagen.nombre_original,
+                    "bounds": [
+                        [b["south"], b["west"]],
+                        [b["north"], b["east"]],
+                    ],
+                }
+            )
+        return Response({"overlays": overlays})
 
     @action(detail=True, methods=["get"], url_path="export-csv")
     def export_csv(self, request, pk=None):
@@ -302,6 +391,48 @@ class ImagenViewSet(viewsets.ReadOnlyModelViewSet):
         if vuelo_id:
             qs = qs.filter(vuelo_id=vuelo_id)
         return qs
+
+    @action(detail=True, methods=["get"], url_path="preview")
+    def preview(self, request, pk=None):
+        """
+        GET /api/imagenes/{id}/preview/
+        Devuelve un JPG reescalado del GeoTIFF para usarlo como imageOverlay
+        en el mapa. Cachea el preview en disco para no re-renderizar en cada
+        request (se regenera si el GeoTIFF cambió).
+        """
+        imagen = self.get_object()
+        nombre = (imagen.nombre_original or imagen.archivo.name or "").lower()
+        if not nombre.endswith((".tif", ".tiff")):
+            return Response(
+                {"error": "La imagen no es un GeoTIFF."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            tiff_path = imagen.archivo.path
+        except (ValueError, FileNotFoundError):
+            return Response(
+                {"error": "Archivo no disponible."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        cache_dir = Path(settings.MEDIA_ROOT) / "overlays"
+        out_path = cache_dir / f"imagen_{imagen.id}.jpg"
+        if not out_path.exists() or (
+            os.path.getmtime(tiff_path) > os.path.getmtime(out_path)
+        ):
+            info = TiffService.generar_preview_web(tiff_path, out_path)
+            if info is None:
+                return Response(
+                    {"error": "El GeoTIFF no está georreferenciado."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        with open(out_path, "rb") as f:
+            data = f.read()
+        response = HttpResponse(data, content_type="image/jpeg")
+        response["Content-Length"] = len(data)
+        response["Cache-Control"] = "private, max-age=3600"
+        return response
 
     @action(detail=True, methods=["get"], url_path="annotated")
     def annotated(self, request, pk=None):

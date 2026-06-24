@@ -2,7 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import L from "leaflet";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { MapContainer, TileLayer, useMap } from "react-leaflet";
 
 import "leaflet/dist/leaflet.css";
@@ -11,12 +11,21 @@ import "leaflet.markercluster/dist/MarkerCluster.Default.css";
 import "leaflet.markercluster";
 
 import { Slider } from "@/components/ui/slider";
+import { Switch } from "@/components/ui/switch";
+import { Button } from "@/components/ui/button";
 import api from "@/services/api";
-import type { DeteccionMapaProps, GeoFeatureCollection } from "@/types";
+import type {
+  DeteccionMapaProps,
+  GeoFeatureCollection,
+  RasterOverlay,
+  RasterOverlayResponse,
+} from "@/types";
 
 interface Props {
   vueloId: number;
 }
+
+type Vista = "cluster" | "cajas";
 
 const COLOR_POR_CLASE: Record<string, string> = {
   planta: "#22c55e",
@@ -29,18 +38,81 @@ function colorClase(clase: string): string {
 }
 
 /**
- * Agrega las detecciones como CircleMarkers dentro de un markerClusterGroup
- * (agrupa plantas cercanas para no saturar el mapa en zoom alejado).
+ * Superpone la(s) ortofoto(s) del GeoTIFF como imageOverlay alineado a sus
+ * bounds WGS84. Las imágenes se piden autenticadas (blob) y se cachean como
+ * objectURL para no re-descargarlas al togglear la visibilidad.
  */
-function ClusterDetecciones({
+function OrtofotoLayer({
+  overlays,
+  visible,
+}: {
+  overlays: RasterOverlay[];
+  visible: boolean;
+}) {
+  const map = useMap();
+  const [urls, setUrls] = useState<Record<number, string>>({});
+
+  useEffect(() => {
+    let cancelado = false;
+    const creados: Record<number, string> = {};
+
+    Promise.all(
+      overlays.map(async (ov) => {
+        try {
+          const res = await api.get(`/imagenes/${ov.imagen_id}/preview/`, {
+            responseType: "blob",
+          });
+          if (cancelado) return;
+          creados[ov.imagen_id] = URL.createObjectURL(res.data);
+        } catch {
+          // imagen sin preview (no georreferenciada): se ignora
+        }
+      })
+    ).then(() => {
+      if (!cancelado) setUrls(creados);
+    });
+
+    return () => {
+      cancelado = true;
+      Object.values(creados).forEach((u) => URL.revokeObjectURL(u));
+    };
+  }, [overlays]);
+
+  useEffect(() => {
+    if (!visible) return;
+    const capas = overlays
+      .map((ov) => {
+        const url = urls[ov.imagen_id];
+        if (!url) return null;
+        const capa = L.imageOverlay(url, ov.bounds, {
+          opacity: 1,
+          pane: "tilePane",
+        });
+        capa.addTo(map);
+        return capa;
+      })
+      .filter((c): c is L.ImageOverlay => c !== null);
+
+    return () => {
+      capas.forEach((c) => map.removeLayer(c));
+    };
+  }, [map, overlays, urls, visible]);
+
+  return null;
+}
+
+/** Agrupa detecciones cercanas en clusters (vista alejada). */
+function ClusterLayer({
   features,
+  visible,
 }: {
   features: GeoFeatureCollection<DeteccionMapaProps>["features"];
+  visible: boolean;
 }) {
   const map = useMap();
 
   useEffect(() => {
-    if (features.length === 0) return;
+    if (!visible || features.length === 0) return;
 
     const cluster = L.markerClusterGroup({
       maxClusterRadius: 45,
@@ -64,27 +136,107 @@ function ClusterDetecciones({
     });
 
     map.addLayer(cluster);
-
-    const bounds = L.latLngBounds(
-      features.map((d) => [
-        d.geometry.coordinates[1],
-        d.geometry.coordinates[0],
-      ])
-    );
-    if (bounds.isValid()) {
-      map.fitBounds(bounds, { padding: [40, 40], maxZoom: 20 });
-    }
-
     return () => {
       map.removeLayer(cluster);
     };
-  }, [map, features]);
+  }, [map, features, visible]);
+
+  return null;
+}
+
+/** Dibuja un recuadro por detección sobre la ortofoto (vista de detalle). */
+function CajasLayer({
+  features,
+  visible,
+}: {
+  features: GeoFeatureCollection<DeteccionMapaProps>["features"];
+  visible: boolean;
+}) {
+  const map = useMap();
+
+  useEffect(() => {
+    if (!visible || features.length === 0) return;
+
+    const grupo = L.layerGroup();
+    features.forEach((det) => {
+      const bbox = det.properties.bbox;
+      const color = colorClase(det.properties.clase);
+      let capa: L.Layer;
+      if (bbox) {
+        const [w, s, e, n] = bbox;
+        capa = L.rectangle(
+          [
+            [s, w],
+            [n, e],
+          ],
+          { color, weight: 2, fill: false }
+        );
+      } else {
+        // sin bbox geográfico: fallback a un punto
+        const [lon, lat] = det.geometry.coordinates;
+        capa = L.circleMarker([lat, lon], {
+          radius: 5,
+          color,
+          fillColor: color,
+          fillOpacity: 0.8,
+          weight: 1.5,
+        });
+      }
+      capa.bindPopup(
+        `${det.properties.clase} — ${(det.properties.confianza * 100).toFixed(0)}%`
+      );
+      grupo.addLayer(capa);
+    });
+
+    grupo.addTo(map);
+    return () => {
+      map.removeLayer(grupo);
+    };
+  }, [map, features, visible]);
+
+  return null;
+}
+
+/** Ajusta el encuadre a la ortofoto si existe, si no a las detecciones. */
+function FitBounds({
+  overlays,
+  features,
+}: {
+  overlays: RasterOverlay[];
+  features: GeoFeatureCollection<DeteccionMapaProps>["features"];
+}) {
+  const map = useMap();
+  const hecho = useRef(false);
+
+  useEffect(() => {
+    if (hecho.current) return;
+
+    let bounds: L.LatLngBounds | null = null;
+    if (overlays.length > 0) {
+      bounds = L.latLngBounds(overlays[0].bounds);
+      overlays.slice(1).forEach((ov) => bounds!.extend(ov.bounds));
+    } else if (features.length > 0) {
+      bounds = L.latLngBounds(
+        features.map((d) => [
+          d.geometry.coordinates[1],
+          d.geometry.coordinates[0],
+        ])
+      );
+    }
+
+    if (bounds && bounds.isValid()) {
+      map.fitBounds(bounds, { padding: [40, 40], maxZoom: 20 });
+      hecho.current = true;
+    }
+  }, [map, overlays, features]);
 
   return null;
 }
 
 export default function MapaDetecciones({ vueloId }: Props) {
   const [minConfianza, setMinConfianza] = useState(0.5);
+  const [vista, setVista] = useState<Vista>("cajas");
+  const [mostrarOrto, setMostrarOrto] = useState(true);
 
   const { data, isLoading } = useQuery<
     GeoFeatureCollection<DeteccionMapaProps>
@@ -98,7 +250,14 @@ export default function MapaDetecciones({ vueloId }: Props) {
         .then((r) => r.data),
   });
 
+  const { data: overlayData } = useQuery<RasterOverlayResponse>({
+    queryKey: ["raster-overlay", vueloId],
+    queryFn: () =>
+      api.get(`/vuelos/${vueloId}/raster-overlay/`).then((r) => r.data),
+  });
+
   const features = data?.features ?? [];
+  const overlays = overlayData?.overlays ?? [];
 
   if (isLoading) {
     return <div className="h-[600px] animate-pulse rounded-lg bg-muted" />;
@@ -107,15 +266,20 @@ export default function MapaDetecciones({ vueloId }: Props) {
   if (features.length === 0) {
     return (
       <div className="space-y-3">
-        <FiltroConfianza
+        <Controles
           minConfianza={minConfianza}
           setMinConfianza={setMinConfianza}
+          vista={vista}
+          setVista={setVista}
+          mostrarOrto={mostrarOrto}
+          setMostrarOrto={setMostrarOrto}
+          hayOrto={overlays.length > 0}
           total={0}
         />
         <div className="flex h-[300px] items-center justify-center rounded-lg border p-6 text-center text-sm text-muted-foreground">
           Este vuelo no tiene detecciones georreferenciadas todavía. Verificá
-          que las imágenes provienen de un GeoTIFF procesado con el módulo
-          Convertir TIFF (necesario para tener coordenadas geográficas).
+          que las imágenes provienen de un GeoTIFF con coordenadas (CRS), o
+          volvé a procesar el vuelo para recalcular la georreferenciación.
         </div>
       </div>
     );
@@ -128,9 +292,14 @@ export default function MapaDetecciones({ vueloId }: Props) {
 
   return (
     <div className="space-y-3">
-      <FiltroConfianza
+      <Controles
         minConfianza={minConfianza}
         setMinConfianza={setMinConfianza}
+        vista={vista}
+        setVista={setVista}
+        mostrarOrto={mostrarOrto}
+        setMostrarOrto={setMostrarOrto}
+        hayOrto={overlays.length > 0}
         total={features.length}
       />
       <MapContainer
@@ -145,34 +314,82 @@ export default function MapaDetecciones({ vueloId }: Props) {
           maxZoom={22}
           maxNativeZoom={19}
         />
-        <ClusterDetecciones features={features} />
+        <OrtofotoLayer overlays={overlays} visible={mostrarOrto} />
+        <ClusterLayer features={features} visible={vista === "cluster"} />
+        <CajasLayer features={features} visible={vista === "cajas"} />
+        <FitBounds overlays={overlays} features={features} />
       </MapContainer>
     </div>
   );
 }
 
-function FiltroConfianza({
+function Controles({
   minConfianza,
   setMinConfianza,
+  vista,
+  setVista,
+  mostrarOrto,
+  setMostrarOrto,
+  hayOrto,
   total,
 }: {
   minConfianza: number;
   setMinConfianza: (v: number) => void;
+  vista: Vista;
+  setVista: (v: Vista) => void;
+  mostrarOrto: boolean;
+  setMostrarOrto: (v: boolean) => void;
+  hayOrto: boolean;
   total: number;
 }) {
   return (
-    <div className="flex flex-wrap items-center gap-3">
-      <span className="text-sm text-muted-foreground">
-        Umbral: {(minConfianza * 100).toFixed(0)}%
-      </span>
-      <Slider
-        value={[Math.round(minConfianza * 100)]}
-        onValueChange={([v]) => setMinConfianza(v / 100)}
-        min={10}
-        max={95}
-        step={5}
-        className="w-40"
-      />
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+      <div className="flex items-center gap-1 rounded-md border p-0.5">
+        <Button
+          type="button"
+          size="sm"
+          variant={vista === "cajas" ? "default" : "ghost"}
+          onClick={() => setVista("cajas")}
+        >
+          Cajas
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant={vista === "cluster" ? "default" : "ghost"}
+          onClick={() => setVista("cluster")}
+        >
+          Cluster
+        </Button>
+      </div>
+
+      <label
+        className={`flex items-center gap-2 text-sm ${
+          hayOrto ? "" : "opacity-50"
+        }`}
+      >
+        <Switch
+          checked={mostrarOrto && hayOrto}
+          onCheckedChange={setMostrarOrto}
+          disabled={!hayOrto}
+        />
+        Ortofoto
+      </label>
+
+      <div className="flex items-center gap-2">
+        <span className="text-sm text-muted-foreground">
+          Umbral: {(minConfianza * 100).toFixed(0)}%
+        </span>
+        <Slider
+          value={[Math.round(minConfianza * 100)]}
+          onValueChange={([v]) => setMinConfianza(v / 100)}
+          min={10}
+          max={95}
+          step={5}
+          className="w-40"
+        />
+      </div>
+
       <span className="text-sm text-muted-foreground">
         {total} {total === 1 ? "planta" : "plantas"} en el mapa
       </span>

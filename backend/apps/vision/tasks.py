@@ -24,11 +24,35 @@ def _sesion_geo_para_imagen(imagen):
     )
 
 
+def _es_tiff(imagen) -> bool:
+    nombre = (imagen.nombre_original or imagen.archivo.name or "").lower()
+    return nombre.endswith((".tif", ".tiff"))
+
+
+def _referencer_archivo_geotiff(imagen):
+    """
+    Devuelve un proyector píxel→WGS84 leído del transform/CRS embebido en el
+    propio archivo GeoTIFF de la imagen, o None si no es un GeoTIFF
+    georreferenciado (JPG/PNG o TIFF sin CRS).
+    """
+    from services.geo_service import GeoService
+
+    if not _es_tiff(imagen):
+        return None
+    try:
+        return GeoService.referencer_desde_tiff(imagen.archivo.path)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"No se pudo leer geo del archivo {imagen.id}: {e}")
+        return None
+
+
 def _crear_detecciones_con_geo(imagen, detecciones_data):
     """
-    Crea las Deteccion de una imagen, intentando georreferenciar cada una si
-    la imagen tiene una SesionConversion con tile bbox_geo asociado. Si no hay
-    datos geo, crea las detecciones igual con ubicacion=None.
+    Crea las Deteccion de una imagen, intentando georreferenciar cada una.
+    Orden de preferencia:
+      1. SesionConversion (módulo converter) con tile bbox_geo.
+      2. Transform/CRS embebido en el propio GeoTIFF subido al vuelo.
+      3. Sin datos geo → ubicacion=None.
     """
     from apps.vision.models import Deteccion
     from services.geo_service import GeoService
@@ -42,6 +66,8 @@ def _crear_detecciones_con_geo(imagen, detecciones_data):
             sesion, imagen.nombre_original
         )
 
+    referencer = None if tile_bbox_geo else _referencer_archivo_geotiff(imagen)
+
     detecciones_obj = []
     for d in detecciones_data:
         deteccion = Deteccion(imagen=imagen, **d)
@@ -49,10 +75,45 @@ def _crear_detecciones_con_geo(imagen, detecciones_data):
             deteccion.ubicacion = GeoService.centro_deteccion_a_geo(
                 deteccion, tile_bbox_geo, tile_size_px
             )
+        elif referencer:
+            cx = (deteccion.x_min + deteccion.x_max) / 2
+            cy = (deteccion.y_min + deteccion.y_max) / 2
+            deteccion.ubicacion = referencer(cx, cy)
         detecciones_obj.append(deteccion)
 
     Deteccion.objects.bulk_create(detecciones_obj)
     return detecciones_obj
+
+
+def _georreferenciar_detecciones_existentes(vuelo) -> int:
+    """
+    Georreferencia detecciones YA creadas que no tienen ubicacion, leyendo el
+    transform/CRS del propio GeoTIFF de cada imagen. Permite que un vuelo cuyas
+    imágenes ya estaban procesadas (sin geo) aparezca en el mapa al pulsar
+    "Procesar vuelo" de nuevo, sin volver a inferir. Idempotente.
+    """
+    actualizadas = 0
+    for imagen in vuelo.imagenes.all():
+        pendientes = imagen.detecciones.filter(ubicacion__isnull=True)
+        if not pendientes.exists():
+            continue
+        referencer = _referencer_archivo_geotiff(imagen)
+        if referencer is None:
+            continue
+        for det in pendientes:
+            cx = (det.x_min + det.x_max) / 2
+            cy = (det.y_min + det.y_max) / 2
+            punto = referencer(cx, cy)
+            if punto:
+                det.ubicacion = punto
+                det.save(update_fields=["ubicacion"])
+                actualizadas += 1
+    if actualizadas:
+        logger.info(
+            f"Vuelo {vuelo.id}: {actualizadas} detecciones georreferenciadas "
+            f"desde el archivo GeoTIFF."
+        )
+    return actualizadas
 
 
 def _intentar_georreferenciar_vuelo(vuelo):
@@ -65,6 +126,7 @@ def _intentar_georreferenciar_vuelo(vuelo):
     from services.geo_service import GeoService
 
     try:
+        punto = None
         sesion = (
             SesionConversion.objects.filter(
                 imagen_vuelo__vuelo=vuelo,
@@ -75,10 +137,19 @@ def _intentar_georreferenciar_vuelo(vuelo):
         )
         if sesion:
             punto = GeoService.centroide_desde_geotiff(sesion.metadatos_geo)
-            if punto:
-                vuelo.ubicacion = punto
-                vuelo.save(update_fields=["ubicacion"])
-                logger.info(f"Vuelo {vuelo.id} georreferenciado: {punto}")
+
+        # Fallback: centroide leído del propio GeoTIFF subido al vuelo.
+        if punto is None:
+            for imagen in vuelo.imagenes.all():
+                if _es_tiff(imagen):
+                    punto = GeoService.centroide_desde_tiff(imagen.archivo.path)
+                    if punto:
+                        break
+
+        if punto:
+            vuelo.ubicacion = punto
+            vuelo.save(update_fields=["ubicacion"])
+            logger.info(f"Vuelo {vuelo.id} georreferenciado: {punto}")
     except Exception as e:  # noqa: BLE001
         logger.warning(f"No se pudo georreferenciar vuelo {vuelo.id}: {e}")
 
@@ -115,6 +186,7 @@ def process_vuelo_task(self, vuelo_id: int) -> dict:
                 vuelo.imagenes_procesadas += 1
                 vuelo.save(update_fields=["imagenes_procesadas"])
 
+        _georreferenciar_detecciones_existentes(vuelo)
         _intentar_georreferenciar_vuelo(vuelo)
 
         # Recalcular desde la fuente de verdad (suma del conteo por imagen) en

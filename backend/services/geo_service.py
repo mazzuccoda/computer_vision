@@ -98,6 +98,82 @@ class GeoService:
         return GeoService.pixel_a_geo(cx, cy, tile_bbox_geo, tile_size_px)
 
     @staticmethod
+    def referencer_desde_tiff(tiff_path: str):
+        """
+        Construye un proyector píxel→WGS84 leyendo el transform afín y el CRS
+        embebidos en el propio GeoTIFF (sin depender del módulo converter).
+
+        Returns:
+            Una función (x_px, y_px) -> Point|None en coordenadas de la imagen
+            completa, o None si el archivo no es un GeoTIFF georreferenciado.
+        """
+        import rasterio
+        from rasterio.crs import CRS
+        from rasterio.warp import transform as warp_transform
+
+        try:
+            src = rasterio.open(tiff_path)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"No se pudo abrir TIFF para georreferenciar: {e}")
+            return None
+
+        if not src.crs:
+            src.close()
+            return None
+
+        transform = src.transform
+        src_crs = src.crs
+        dst_crs = CRS.from_epsg(4326)
+        src.close()
+
+        def proyectar(x_px: float, y_px: float) -> Point | None:
+            try:
+                x_crs, y_crs = transform * (x_px, y_px)
+                lon, lat = warp_transform(src_crs, dst_crs, [x_crs], [y_crs])
+                lon, lat = lon[0], lat[0]
+                if lon == 0 and lat == 0:
+                    return None
+                return Point(lon, lat, srid=4326)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"Error proyectando píxel a geo desde TIFF: {e}")
+                return None
+
+        return proyectar
+
+    @staticmethod
+    def centroide_desde_tiff(tiff_path: str) -> Point | None:
+        """
+        Centro geográfico (WGS84) de un GeoTIFF leyendo sus bounds directamente
+        del archivo. Usado para Vuelo.ubicacion cuando el GeoTIFF se subió
+        directo al vuelo (sin pasar por el módulo converter).
+        """
+        import rasterio
+        from rasterio.crs import CRS
+        from rasterio.warp import transform_bounds
+
+        try:
+            with rasterio.open(tiff_path) as src:
+                if not src.crs:
+                    return None
+                west, south, east, north = transform_bounds(
+                    src.crs,
+                    CRS.from_epsg(4326),
+                    src.bounds.left,
+                    src.bounds.bottom,
+                    src.bounds.right,
+                    src.bounds.top,
+                )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"No se pudo leer centroide del TIFF: {e}")
+            return None
+
+        lon = (west + east) / 2
+        lat = (south + north) / 2
+        if lon == 0 and lat == 0:
+            return None
+        return Point(lon, lat, srid=4326)
+
+    @staticmethod
     def tile_bbox_para_imagen(sesion, nombre_imagen: str):
         """
         Dado una SesionConversion y el nombre de archivo de una imagen,

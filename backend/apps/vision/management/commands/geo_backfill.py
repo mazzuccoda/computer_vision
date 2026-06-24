@@ -11,7 +11,7 @@ from django.contrib.gis.geos import Point
 from django.core.management.base import BaseCommand
 
 from apps.converter.models import SesionConversion
-from apps.vision.models import Campo
+from apps.vision.models import Campo, Imagen
 from services.geo_service import GeoService
 
 
@@ -82,6 +82,55 @@ class Command(BaseCommand):
             vuelo = imagen.vuelo
             if vuelo and (force or vuelo.ubicacion is None):
                 punto = GeoService.centroide_desde_geotiff(sesion.metadatos_geo)
+                if punto:
+                    vuelo.ubicacion = punto
+                    vuelo.save(update_fields=["ubicacion"])
+                    vuelos_geo.add(vuelo.id)
+
+        # 3. Imágenes GeoTIFF subidas directo al vuelo (sin pasar por el
+        # converter): leer el transform/CRS embebido en el propio archivo.
+        imagenes_qs = Imagen.objects.select_related("vuelo").all()
+        for imagen in imagenes_qs:
+            nombre = (imagen.nombre_original or imagen.archivo.name or "").lower()
+            if not nombre.endswith((".tif", ".tiff")):
+                continue
+
+            try:
+                path = imagen.archivo.path
+            except (ValueError, FileNotFoundError):
+                continue
+
+            qs = imagen.detecciones.all()
+            if not force:
+                qs = qs.filter(ubicacion__isnull=True)
+            if not qs.exists():
+                # Si las detecciones ya están georreferenciadas, igual intentar
+                # fijar el centroide del vuelo si falta.
+                vuelo = imagen.vuelo
+                if vuelo and vuelo.ubicacion is None:
+                    punto = GeoService.centroide_desde_tiff(path)
+                    if punto:
+                        vuelo.ubicacion = punto
+                        vuelo.save(update_fields=["ubicacion"])
+                        vuelos_geo.add(vuelo.id)
+                continue
+
+            referencer = GeoService.referencer_desde_tiff(path)
+            if referencer is None:
+                continue
+
+            for det in qs:
+                cx = (det.x_min + det.x_max) / 2
+                cy = (det.y_min + det.y_max) / 2
+                punto = referencer(cx, cy)
+                if punto:
+                    det.ubicacion = punto
+                    det.save(update_fields=["ubicacion"])
+                    det_actualizadas += 1
+
+            vuelo = imagen.vuelo
+            if vuelo and (force or vuelo.ubicacion is None):
+                punto = GeoService.centroide_desde_tiff(path)
                 if punto:
                     vuelo.ubicacion = punto
                     vuelo.save(update_fields=["ubicacion"])

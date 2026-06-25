@@ -21,6 +21,11 @@ logger = logging.getLogger(__name__)
 
 MEDIA_ROOT = Path(settings.MEDIA_ROOT)
 
+# Lado máximo (px) y calidad del JPG de preview reproyectado a EPSG:4326.
+# Configurables por settings/env para poder subir la nitidez al hacer zoom.
+PREVIEW_MAX_DIM = getattr(settings, "ORTOFOTO_PREVIEW_MAX_DIM", 4096)
+PREVIEW_JPG_QUALITY = getattr(settings, "ORTOFOTO_PREVIEW_JPG_QUALITY", 90)
+
 
 class TiffInfo:
     """Metadata extraída de un GeoTIFF antes de procesar."""
@@ -113,7 +118,9 @@ class TiffService:
         return dst_transform, out_w, out_h, src_w, src_h
 
     @staticmethod
-    def preview_bounds(tiff_path: str, max_dim: int = 2048) -> dict | None:
+    def preview_bounds(
+        tiff_path: str, max_dim: int = PREVIEW_MAX_DIM
+    ) -> dict | None:
         """
         Devuelve los bounds WGS84 de la grilla del preview (sin generar el JPG),
         para colocar la ortofoto en el mapa alineada con su imagen reproyectada.
@@ -137,8 +144,8 @@ class TiffService:
     def generar_preview_web(
         tiff_path: str,
         out_path: Path,
-        max_dim: int = 2048,
-        calidad_jpg: int = 85,
+        max_dim: int = PREVIEW_MAX_DIM,
+        calidad_jpg: int = PREVIEW_JPG_QUALITY,
     ) -> dict | None:
         """
         Genera un preview JPG reescalado de un GeoTIFF para superponerlo en el
@@ -173,7 +180,9 @@ class TiffService:
                     out_shape=(bandas, src_h, src_w),
                     resampling=Resampling.bilinear,
                 )
-                img_rgb = TiffService._bandas_a_rgb(data, bandas)
+                img_rgb = TiffService._bandas_a_rgb(
+                    data, bandas, preview=True
+                )
                 if img_rgb is None:
                     return None
 
@@ -381,28 +390,39 @@ class TiffService:
         }
 
     @staticmethod
-    def _bandas_a_rgb(data: np.ndarray, num_bandas: int):
+    def _bandas_a_rgb(
+        data: np.ndarray, num_bandas: int, preview: bool = False
+    ):
         """
         Convierte array de bandas rasterio a imagen RGB uint8.
         Soporta 1 banda (grayscale), 3+ bandas (RGB/multiespectral).
         Normaliza a 8 bits si el GeoTIFF es 16 bits.
+
+        Args:
+            preview: si True usa una normalización pensada para visualización
+                (color fiel para imágenes ya de 8 bits + estiramiento por
+                percentiles para mayor contraste en el resto). El default
+                (False) conserva el comportamiento histórico de los tiles que
+                alimentan a YOLO, para no alterar la inferencia.
         """
         try:
+            norm = (
+                TiffService._normalizar_para_preview
+                if preview
+                else TiffService._normalizar_a_uint8
+            )
             if num_bandas == 1:
-                banda = data[0].astype(np.float32)
-                banda = TiffService._normalizar_a_uint8(banda)
+                banda = norm(data[0])
                 return np.stack([banda, banda, banda], axis=-1)
 
             elif num_bandas >= 3:
-                r = TiffService._normalizar_a_uint8(data[0].astype(np.float32))
-                g = TiffService._normalizar_a_uint8(data[1].astype(np.float32))
-                b = TiffService._normalizar_a_uint8(data[2].astype(np.float32))
+                r = norm(data[0])
+                g = norm(data[1])
+                b = norm(data[2])
                 return np.stack([r, g, b], axis=-1)
 
             else:  # 2 bandas (raro, pero posible)
-                banda = TiffService._normalizar_a_uint8(
-                    data[0].astype(np.float32)
-                )
+                banda = norm(data[0])
                 return np.stack([banda, banda, banda], axis=-1)
 
         except Exception as e:  # noqa: BLE001
@@ -411,12 +431,33 @@ class TiffService:
 
     @staticmethod
     def _normalizar_a_uint8(arr: np.ndarray) -> np.ndarray:
-        """Normaliza cualquier rango a 0-255 uint8."""
+        """Normaliza cualquier rango a 0-255 uint8 (min-max global)."""
+        arr = arr.astype(np.float32)
         arr_min = arr.min()
         arr_max = arr.max()
         if arr_max == arr_min:
             return np.zeros_like(arr, dtype=np.uint8)
         normalizado = (arr - arr_min) / (arr_max - arr_min) * 255
+        return normalizado.astype(np.uint8)
+
+    @staticmethod
+    def _normalizar_para_preview(arr: np.ndarray) -> np.ndarray:
+        """
+        Normalización orientada a visualización de la ortofoto:
+
+        - GeoTIFF ya de 8 bits (uint8): se devuelve tal cual, preservando el
+          color real (un min-max por banda distorsionaría los colores).
+        - Mayor profundidad (uint16, float, etc.): estiramiento por percentiles
+          2–98 % para dar contraste sin que outliers laven la imagen.
+        """
+        if arr.dtype == np.uint8:
+            return arr
+        arr = arr.astype(np.float32)
+        lo, hi = np.percentile(arr, (2.0, 98.0))
+        if hi <= lo:
+            return TiffService._normalizar_a_uint8(arr)
+        recortado = np.clip(arr, lo, hi)
+        normalizado = (recortado - lo) / (hi - lo) * 255
         return normalizado.astype(np.uint8)
 
     @staticmethod

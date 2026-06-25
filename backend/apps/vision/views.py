@@ -422,7 +422,10 @@ class ImagenViewSet(viewsets.ReadOnlyModelViewSet):
             )
 
         cache_dir = Path(settings.MEDIA_ROOT) / "overlays"
-        out_path = cache_dir / f"imagen_{imagen.id}.jpg"
+        # El lado máximo va en el nombre: al cambiar la resolución del preview
+        # (setting/env) se invalida el caché viejo sin tocar el GeoTIFF.
+        max_dim = getattr(settings, "ORTOFOTO_PREVIEW_MAX_DIM", 4096)
+        out_path = cache_dir / f"imagen_{imagen.id}_{max_dim}.jpg"
         if not out_path.exists() or (
             os.path.getmtime(tiff_path) > os.path.getmtime(out_path)
         ):

@@ -355,6 +355,11 @@ class VueloViewSet(viewsets.ModelViewSet):
                         [b["south"], b["west"]],
                         [b["north"], b["east"]],
                     ],
+                    # Zoom XYZ que iguala la resolución nativa del GeoTIFF: el
+                    # frontend lo usa como maxNativeZoom de la capa de tiles.
+                    "max_native_zoom": TiffService.tile_native_maxzoom(
+                        imagen.archivo.path
+                    ),
                 }
             )
         return Response({"overlays": overlays})
@@ -513,6 +518,61 @@ class ImagenViewSet(viewsets.ReadOnlyModelViewSet):
         imagen.revisada_en = timezone.now() if revisada else None
         imagen.save(update_fields=["revisada", "revisada_en"])
         return Response(ImagenSerializer(imagen).data)
+
+
+class ImagenTileView(APIView):
+    """
+    GET /api/imagenes/{id}/tiles/{z}/{x}/{y}.png
+
+    Sirve tiles XYZ (slippy map) leídos del GeoTIFF a resolución nativa, para
+    que la ortofoto se vea nítida al hacer zoom (en vez de un único JPG estirado
+    por Leaflet). Cada tile se cachea en disco; se regenera si el GeoTIFF cambió.
+    Devuelve 204 para tiles fuera de la extensión de la ortofoto.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk, z, x, y):
+        try:
+            imagen = Imagen.objects.get(pk=pk)
+        except Imagen.DoesNotExist:
+            return HttpResponse(status=404)
+
+        nombre = (imagen.nombre_original or imagen.archivo.name or "").lower()
+        if not nombre.endswith((".tif", ".tiff")):
+            return HttpResponse(status=404)
+        try:
+            tiff_path = imagen.archivo.path
+        except (ValueError, FileNotFoundError):
+            return HttpResponse(status=404)
+
+        cache_path = (
+            Path(settings.MEDIA_ROOT)
+            / "tiles_xyz"
+            / f"imagen_{imagen.id}"
+            / str(z)
+            / str(x)
+            / f"{y}.png"
+        )
+        if cache_path.exists() and (
+            os.path.getmtime(cache_path) >= os.path.getmtime(tiff_path)
+        ):
+            with open(cache_path, "rb") as f:
+                data = f.read()
+        else:
+            data = TiffService.generar_tile_xyz(tiff_path, z, x, y)
+            if data is None:
+                return HttpResponse(status=204)
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = cache_path.with_suffix(".png.tmp")
+            with open(tmp, "wb") as f:
+                f.write(data)
+            tmp.replace(cache_path)
+
+        response = HttpResponse(data, content_type="image/png")
+        response["Content-Length"] = len(data)
+        response["Cache-Control"] = "private, max-age=86400"
+        return response
 
 
 def _recalcular_conteos(imagen):

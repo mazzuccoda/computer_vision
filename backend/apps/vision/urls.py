@@ -9,6 +9,7 @@ from .views import (
     CampoViewSet,
     DashboardStatsView,
     DeteccionViewSet,
+    ImagenTileView,
     ImagenViewSet,
     LogoutView,
     MapaGeneralView,
@@ -32,6 +33,11 @@ urlpatterns = [
         "mapa/campos-y-vuelos/",
         MapaGeneralView.as_view(),
         name="mapa-campos-vuelos",
+    ),
+    path(
+        "imagenes/<int:pk>/tiles/<int:z>/<int:x>/<int:y>.png",
+        ImagenTileView.as_view(),
+        name="imagen-tile",
     ),
     path("", include(router.urls)),
 ]

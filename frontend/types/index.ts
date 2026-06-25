@@ -42,8 +42,12 @@ export interface Imagen {
   nombre_original: string;
   procesada: boolean;
   conteo_plantas: number;
+  revisada: boolean;
+  revisada_en: string | null;
   creado_en: string;
 }
+
+export type DeteccionOrigen = "modelo" | "manual" | "corregida";
 
 export interface Deteccion {
   id: number;
@@ -54,6 +58,7 @@ export interface Deteccion {
   x_max: number;
   y_max: number;
   clase: string;
+  origen: DeteccionOrigen;
 }
 
 export interface EstadoVisor {
@@ -116,6 +121,64 @@ export interface RasterOverlay {
 
 export interface RasterOverlayResponse {
   overlays: RasterOverlay[];
+}
+
+// --------------------------------------------------------------------------
+// Fase 4: corrección manual + reentrenamiento activo
+// --------------------------------------------------------------------------
+
+export interface ConfigReentrenamiento {
+  auto_reentrenar: boolean;
+  umbral_correcciones: number;
+  auto_activar_modelo: boolean;
+  margen_map50: number;
+  epochs: number;
+  base_model: string;
+  correcciones_acumuladas: number;
+  ultimo_reentrenamiento: string | null;
+  actualizado_en: string;
+}
+
+export type CicloEstado =
+  | "pendiente"
+  | "construyendo"
+  | "entrenando"
+  | "evaluando"
+  | "completado"
+  | "activado"
+  | "error";
+
+export interface CicloReentrenamiento {
+  id: number;
+  disparador: "auto" | "manual";
+  estado: CicloEstado;
+  num_correcciones: number;
+  num_imagenes: number;
+  num_anotaciones: number;
+  dataset: number | null;
+  modelo: number | null;
+  modelo_nombre: string | null;
+  modelo_version: string | null;
+  map50_anterior: number | null;
+  map50_nuevo: number | null;
+  activado: boolean;
+  mensaje: string;
+  creado_en: string;
+  completado_en: string | null;
+}
+
+export interface ModeloActivoResumen {
+  id: number;
+  nombre: string;
+  version: string;
+  map50: number | null;
+}
+
+export interface EstadoReentrenamiento {
+  config: ConfigReentrenamiento;
+  imagenes_revisadas: number;
+  modelo_activo: ModeloActivoResumen | null;
+  ultimo_ciclo: CicloReentrenamiento | null;
 }
 
 export interface MapaGeneralResponse {

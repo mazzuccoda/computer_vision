@@ -108,8 +108,46 @@ class DeteccionSerializer(serializers.ModelSerializer):
             "x_max",
             "y_max",
             "clase",
+            "origen",
         ]
         read_only_fields = fields
+
+
+class DeteccionEditSerializer(serializers.ModelSerializer):
+    """Crear / actualizar una detección manualmente desde el visor."""
+
+    class Meta:
+        model = Deteccion
+        fields = [
+            "id",
+            "imagen",
+            "confianza",
+            "x_min",
+            "y_min",
+            "x_max",
+            "y_max",
+            "clase",
+            "origen",
+        ]
+        read_only_fields = ["id", "origen"]
+        extra_kwargs = {
+            "imagen": {"required": False},
+            "confianza": {"required": False},
+            "clase": {"required": False},
+        }
+
+    def validate(self, attrs):
+        x_min = attrs.get("x_min", getattr(self.instance, "x_min", None))
+        y_min = attrs.get("y_min", getattr(self.instance, "y_min", None))
+        x_max = attrs.get("x_max", getattr(self.instance, "x_max", None))
+        y_max = attrs.get("y_max", getattr(self.instance, "y_max", None))
+        if None in (x_min, y_min, x_max, y_max):
+            raise serializers.ValidationError("Faltan coordenadas de la caja.")
+        if x_max <= x_min or y_max <= y_min:
+            raise serializers.ValidationError(
+                "La caja debe tener x_max>x_min y y_max>y_min."
+            )
+        return attrs
 
 
 class ImagenSerializer(serializers.ModelSerializer):
@@ -122,6 +160,8 @@ class ImagenSerializer(serializers.ModelSerializer):
             "nombre_original",
             "procesada",
             "conteo_plantas",
+            "revisada",
+            "revisada_en",
             "creado_en",
         ]
         read_only_fields = [
@@ -129,6 +169,8 @@ class ImagenSerializer(serializers.ModelSerializer):
             "nombre_original",
             "procesada",
             "conteo_plantas",
+            "revisada",
+            "revisada_en",
             "creado_en",
         ]
 

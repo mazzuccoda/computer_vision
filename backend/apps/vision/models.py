@@ -92,6 +92,10 @@ class Imagen(models.Model):
     nombre_original = models.CharField(max_length=255)
     procesada = models.BooleanField(default=False)
     conteo_plantas = models.IntegerField(default=0)
+    # Marcada como revisada por un humano: sus detecciones actuales son verdad
+    # de referencia y se usan como muestra para reentrenar el modelo (Fase 4).
+    revisada = models.BooleanField(default=False)
+    revisada_en = models.DateTimeField(null=True, blank=True)
     # TODO FASE 3: Agregar campo geotiff_path para archivos GeoTIFF georreferenciados
     creado_en = models.DateTimeField(auto_now_add=True)
 
@@ -103,6 +107,11 @@ class Imagen(models.Model):
 
 
 class Deteccion(models.Model):
+    class Origen(models.TextChoices):
+        MODELO = "modelo", "Detectada por el modelo"
+        MANUAL = "manual", "Agregada manualmente"
+        CORREGIDA = "corregida", "Corregida manualmente"
+
     imagen = models.ForeignKey(
         Imagen, on_delete=models.CASCADE, related_name="detecciones"
     )
@@ -112,6 +121,11 @@ class Deteccion(models.Model):
     x_max = models.FloatField()
     y_max = models.FloatField()
     clase = models.CharField(max_length=100, default="planta")
+    # Procedencia de la detección: del modelo, agregada a mano (planta
+    # faltante) o una caja del modelo que el usuario reubicó/redimensionó.
+    origen = models.CharField(
+        max_length=20, choices=Origen.choices, default=Origen.MODELO
+    )
     ubicacion = gis_models.PointField(
         null=True,
         blank=True,

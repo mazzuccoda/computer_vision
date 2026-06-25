@@ -46,6 +46,29 @@ def _referencer_archivo_geotiff(imagen):
         return None
 
 
+def referencer_para_imagen(imagen):
+    """
+    Devuelve un proyector ``(cx_px, cy_px) -> Point|None`` para una imagen,
+    usando primero la SesionConversion (converter) y, si no, el CRS embebido
+    en el propio GeoTIFF. Devuelve None si la imagen no es georreferenciable.
+    Reutilizado por el procesamiento y por la edición manual de detecciones.
+    """
+    from services.geo_service import GeoService
+
+    sesion = _sesion_geo_para_imagen(imagen)
+    if sesion:
+        tile_bbox_geo, tile_size_px = GeoService.tile_bbox_para_imagen(
+            sesion, imagen.nombre_original
+        )
+        if tile_bbox_geo:
+            def _proj(cx, cy, _bbox=tile_bbox_geo, _ts=tile_size_px):
+                return GeoService.pixel_a_geo(cx, cy, _bbox, _ts)
+
+            return _proj
+
+    return _referencer_archivo_geotiff(imagen)
+
+
 def _crear_detecciones_con_geo(imagen, detecciones_data):
     """
     Crea las Deteccion de una imagen, intentando georreferenciar cada una.

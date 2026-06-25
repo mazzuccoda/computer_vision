@@ -1,25 +1,31 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import L from "leaflet";
+import { Loader2, Pencil, Save, Square, Trash2, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { MapContainer, TileLayer, useMap } from "react-leaflet";
+import { toast } from "sonner";
 
 import "leaflet/dist/leaflet.css";
 import "leaflet.markercluster/dist/MarkerCluster.css";
 import "leaflet.markercluster/dist/MarkerCluster.Default.css";
 import "leaflet.markercluster";
 
+import { Badge } from "@/components/ui/badge";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
 import api from "@/services/api";
+import { deteccionesService } from "@/services/detecciones.service";
 import type {
   DeteccionMapaProps,
   GeoFeatureCollection,
   RasterOverlay,
   RasterOverlayResponse,
 } from "@/types";
+
+import EditorMapaLayer, { type EditorController } from "./EditorMapaLayer";
 
 interface Props {
   vueloId: number;
@@ -234,9 +240,16 @@ function FitBounds({
 }
 
 export default function MapaDetecciones({ vueloId }: Props) {
+  const qc = useQueryClient();
   const [minConfianza, setMinConfianza] = useState(0.5);
   const [vista, setVista] = useState<Vista>("cajas");
   const [mostrarOrto, setMostrarOrto] = useState(true);
+
+  const [editMode, setEditMode] = useState(false);
+  const [drawMode, setDrawMode] = useState(false);
+  const [editInfo, setEditInfo] = useState({ dirty: 0, seleccion: false });
+  const [guardando, setGuardando] = useState(false);
+  const controllerRef = useRef<EditorController | null>(null);
 
   const { data, isLoading } = useQuery<
     GeoFeatureCollection<DeteccionMapaProps>
@@ -258,12 +271,56 @@ export default function MapaDetecciones({ vueloId }: Props) {
 
   const features = data?.features ?? [];
   const overlays = overlayData?.overlays ?? [];
+  const hayOrto = overlays.length > 0;
+
+  const onSaveOps: React.ComponentProps<
+    typeof EditorMapaLayer
+  >["onSaveOps"] = async ({ crear, editar, borrar }) => {
+    const ops: Promise<unknown>[] = [];
+    crear.forEach((c) => ops.push(deteccionesService.createGeo(c.imagen, c.geo)));
+    editar.forEach((e) => ops.push(deteccionesService.updateGeo(e.id, e.geo)));
+    borrar.forEach((id) => ops.push(deteccionesService.remove(id)));
+    if (ops.length === 0) {
+      toast.info("No hay cambios para guardar.");
+      return 0;
+    }
+    await Promise.all(ops);
+    toast.success(`${ops.length} corrección(es) guardada(s)`, {
+      description: "Se actualizó el conteo y el contador de reentrenamiento.",
+    });
+    qc.invalidateQueries({ queryKey: ["detecciones-mapa", vueloId] });
+    qc.invalidateQueries({ queryKey: ["raster-overlay", vueloId] });
+    qc.invalidateQueries({ queryKey: ["reentrenamiento"] });
+    qc.invalidateQueries({ queryKey: ["vuelo"] });
+    return ops.length;
+  };
+
+  const guardar = async () => {
+    if (!controllerRef.current) return;
+    setGuardando(true);
+    try {
+      const n = await controllerRef.current.guardar();
+      if (n > 0) {
+        setEditMode(false);
+        setDrawMode(false);
+      }
+    } catch {
+      toast.error("No se pudieron guardar las correcciones.");
+    } finally {
+      setGuardando(false);
+    }
+  };
+
+  const cerrarEdicion = () => {
+    setEditMode(false);
+    setDrawMode(false);
+  };
 
   if (isLoading) {
     return <div className="h-[600px] animate-pulse rounded-lg bg-muted" />;
   }
 
-  if (features.length === 0) {
+  if (features.length === 0 && !hayOrto) {
     return (
       <div className="space-y-3">
         <Controles
@@ -273,8 +330,10 @@ export default function MapaDetecciones({ vueloId }: Props) {
           setVista={setVista}
           mostrarOrto={mostrarOrto}
           setMostrarOrto={setMostrarOrto}
-          hayOrto={overlays.length > 0}
+          hayOrto={false}
           total={0}
+          puedeEditar={false}
+          onEditar={() => {}}
         />
         <div className="flex h-[300px] items-center justify-center rounded-lg border p-6 text-center text-sm text-muted-foreground">
           Este vuelo no tiene detecciones georreferenciadas todavía. Verificá
@@ -285,23 +344,44 @@ export default function MapaDetecciones({ vueloId }: Props) {
     );
   }
 
-  const centro: [number, number] = [
-    features[0].geometry.coordinates[1],
-    features[0].geometry.coordinates[0],
-  ];
+  let centro: [number, number];
+  if (features.length > 0) {
+    centro = [
+      features[0].geometry.coordinates[1],
+      features[0].geometry.coordinates[0],
+    ];
+  } else {
+    const c = L.latLngBounds(overlays[0].bounds).getCenter();
+    centro = [c.lat, c.lng];
+  }
 
   return (
     <div className="space-y-3">
-      <Controles
-        minConfianza={minConfianza}
-        setMinConfianza={setMinConfianza}
-        vista={vista}
-        setVista={setVista}
-        mostrarOrto={mostrarOrto}
-        setMostrarOrto={setMostrarOrto}
-        hayOrto={overlays.length > 0}
-        total={features.length}
-      />
+      {editMode ? (
+        <BarraEdicion
+          drawMode={drawMode}
+          setDrawMode={setDrawMode}
+          dirty={editInfo.dirty}
+          seleccion={editInfo.seleccion}
+          guardando={guardando}
+          onBorrar={() => controllerRef.current?.borrarSeleccion()}
+          onGuardar={guardar}
+          onCerrar={cerrarEdicion}
+        />
+      ) : (
+        <Controles
+          minConfianza={minConfianza}
+          setMinConfianza={setMinConfianza}
+          vista={vista}
+          setVista={setVista}
+          mostrarOrto={mostrarOrto}
+          setMostrarOrto={setMostrarOrto}
+          hayOrto={hayOrto}
+          total={features.length}
+          puedeEditar={hayOrto}
+          onEditar={() => setEditMode(true)}
+        />
+      )}
       <MapContainer
         center={centro}
         zoom={18}
@@ -314,11 +394,95 @@ export default function MapaDetecciones({ vueloId }: Props) {
           maxZoom={22}
           maxNativeZoom={19}
         />
-        <OrtofotoLayer overlays={overlays} visible={mostrarOrto} />
-        <ClusterLayer features={features} visible={vista === "cluster"} />
-        <CajasLayer features={features} visible={vista === "cajas"} />
+        <OrtofotoLayer overlays={overlays} visible={mostrarOrto || editMode} />
+        <ClusterLayer
+          features={features}
+          visible={!editMode && vista === "cluster"}
+        />
+        <CajasLayer
+          features={features}
+          visible={!editMode && vista === "cajas"}
+        />
+        {editMode && (
+          <EditorMapaLayer
+            active={editMode}
+            drawMode={drawMode}
+            features={features}
+            overlays={overlays}
+            controllerRef={controllerRef}
+            onChange={setEditInfo}
+            onSaveOps={onSaveOps}
+          />
+        )}
         <FitBounds overlays={overlays} features={features} />
       </MapContainer>
+    </div>
+  );
+}
+
+function BarraEdicion({
+  drawMode,
+  setDrawMode,
+  dirty,
+  seleccion,
+  guardando,
+  onBorrar,
+  onGuardar,
+  onCerrar,
+}: {
+  drawMode: boolean;
+  setDrawMode: (v: boolean) => void;
+  dirty: number;
+  seleccion: boolean;
+  guardando: boolean;
+  onBorrar: () => void;
+  onGuardar: () => void;
+  onCerrar: () => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/40 px-3 py-2">
+      <span className="text-sm font-medium">Editor sobre el mapa</span>
+      {dirty > 0 && (
+        <Badge className="bg-amber-500 hover:bg-amber-500">
+          {dirty} cambio(s)
+        </Badge>
+      )}
+      <span className="ml-2 hidden text-xs text-muted-foreground sm:inline">
+        Activá “Dibujar” y arrastrá sobre la ortofoto · clic para
+        seleccionar/mover · esquinas para redimensionar · Supr para borrar
+      </span>
+      <div className="ml-auto flex items-center gap-2">
+        <Button
+          type="button"
+          size="sm"
+          variant={drawMode ? "default" : "outline"}
+          onClick={() => setDrawMode(!drawMode)}
+        >
+          <Square className="mr-1 h-4 w-4" />
+          {drawMode ? "Dibujando…" : "Dibujar"}
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={onBorrar}
+          disabled={!seleccion}
+        >
+          <Trash2 className="mr-1 h-4 w-4" />
+          Eliminar
+        </Button>
+        <Button size="sm" onClick={onGuardar} disabled={guardando}>
+          {guardando ? (
+            <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+          ) : (
+            <Save className="mr-1 h-4 w-4" />
+          )}
+          Guardar
+        </Button>
+        <Button size="sm" variant="ghost" onClick={onCerrar}>
+          <X className="mr-1 h-4 w-4" />
+          Cerrar
+        </Button>
+      </div>
     </div>
   );
 }
@@ -332,6 +496,8 @@ function Controles({
   setMostrarOrto,
   hayOrto,
   total,
+  puedeEditar,
+  onEditar,
 }: {
   minConfianza: number;
   setMinConfianza: (v: number) => void;
@@ -341,6 +507,8 @@ function Controles({
   setMostrarOrto: (v: boolean) => void;
   hayOrto: boolean;
   total: number;
+  puedeEditar: boolean;
+  onEditar: () => void;
 }) {
   return (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
@@ -393,6 +561,19 @@ function Controles({
       <span className="text-sm text-muted-foreground">
         {total} {total === 1 ? "planta" : "plantas"} en el mapa
       </span>
+
+      {puedeEditar && (
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="ml-auto"
+          onClick={onEditar}
+        >
+          <Pencil className="mr-1 h-4 w-4" />
+          Editar en el mapa
+        </Button>
+      )}
     </div>
   );
 }

@@ -125,6 +125,16 @@ MEDIA_ROOT = config("MEDIA_ROOT", default=str(BASE_DIR / "media"))
 # Path where YOLO weights live (best.pt or fallback).
 MODELS_PATH = config("MODELS_PATH", default=str(BASE_DIR / "models"))
 
+# Ortofoto preview (imageOverlay del mapa/editor): lado máximo en píxeles del
+# JPG reproyectado a EPSG:4326 y calidad JPEG. Subir mejora la nitidez al hacer
+# zoom (a costa de memoria/tiempo al regenerar el preview cacheado).
+ORTOFOTO_PREVIEW_MAX_DIM = config(
+    "ORTOFOTO_PREVIEW_MAX_DIM", default=4096, cast=int
+)
+ORTOFOTO_PREVIEW_JPG_QUALITY = config(
+    "ORTOFOTO_PREVIEW_JPG_QUALITY", default=90, cast=int
+)
+
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # --------------------------------------------------------------------------

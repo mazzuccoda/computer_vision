@@ -43,10 +43,60 @@ function colorClase(clase: string): string {
   return COLOR_POR_CLASE[clase] ?? COLOR_POR_CLASE.planta;
 }
 
+// Zoom máximo de overzoom permitido en el mapa: por encima del maxNativeZoom de
+// la ortofoto, Leaflet sobre-escala los tiles nativos (siguen más nítidos que
+// el JPG único anterior).
+const MAX_ZOOM = 24;
+
 /**
- * Superpone la(s) ortofoto(s) del GeoTIFF como imageOverlay alineado a sus
- * bounds WGS84. Las imágenes se piden autenticadas (blob) y se cachean como
- * objectURL para no re-descargarlas al togglear la visibilidad.
+ * Capa de tiles XYZ que pide cada tile autenticado (JWT) vía axios y lo entrega
+ * a Leaflet como objectURL. Necesario porque la API exige Authorization y un
+ * `L.tileLayer` normal hace requests <img> sin cabeceras.
+ */
+const TileLayerAutenticada = L.GridLayer.extend({
+  createTile(coords: L.Coords, done: L.DoneCallback) {
+    const tile = document.createElement("img");
+    tile.setAttribute("role", "presentation");
+    const imagenId = (this.options as { imagenId: number }).imagenId;
+    const { z, x, y } = coords;
+
+    api
+      .get(`/imagenes/${imagenId}/tiles/${z}/${x}/${y}.png`, {
+        responseType: "blob",
+        validateStatus: (s) => s === 200 || s === 204,
+      })
+      .then((res) => {
+        // 204 = tile fuera de la ortofoto: se deja transparente.
+        if (res.status === 204 || !res.data || res.data.size === 0) {
+          done(undefined, tile);
+          return;
+        }
+        const url = URL.createObjectURL(res.data);
+        tile.onload = () => {
+          URL.revokeObjectURL(url);
+          done(undefined, tile);
+        };
+        tile.onerror = () => {
+          URL.revokeObjectURL(url);
+          done(undefined, tile);
+        };
+        tile.src = url;
+      })
+      .catch(() => {
+        done(undefined, tile);
+      });
+
+    return tile;
+  },
+}) as unknown as new (options: L.GridLayerOptions & {
+  imagenId: number;
+}) => L.GridLayer;
+
+/**
+ * Superpone la(s) ortofoto(s) del GeoTIFF como capa de tiles XYZ leídos a
+ * resolución nativa del raster. A diferencia del imageOverlay anterior (un JPG
+ * estirado y borroso al hacer zoom), cada nivel de zoom carga sólo la ventana
+ * visible a su detalle nativo, así se ven las plantas para marcarlas a mano.
  */
 function OrtofotoLayer({
   overlays,
@@ -56,53 +106,29 @@ function OrtofotoLayer({
   visible: boolean;
 }) {
   const map = useMap();
-  const [urls, setUrls] = useState<Record<number, string>>({});
-
-  useEffect(() => {
-    let cancelado = false;
-    const creados: Record<number, string> = {};
-
-    Promise.all(
-      overlays.map(async (ov) => {
-        try {
-          const res = await api.get(`/imagenes/${ov.imagen_id}/preview/`, {
-            responseType: "blob",
-          });
-          if (cancelado) return;
-          creados[ov.imagen_id] = URL.createObjectURL(res.data);
-        } catch {
-          // imagen sin preview (no georreferenciada): se ignora
-        }
-      })
-    ).then(() => {
-      if (!cancelado) setUrls(creados);
-    });
-
-    return () => {
-      cancelado = true;
-      Object.values(creados).forEach((u) => URL.revokeObjectURL(u));
-    };
-  }, [overlays]);
 
   useEffect(() => {
     if (!visible) return;
-    const capas = overlays
-      .map((ov) => {
-        const url = urls[ov.imagen_id];
-        if (!url) return null;
-        const capa = L.imageOverlay(url, ov.bounds, {
-          opacity: 1,
-          pane: "tilePane",
-        });
-        capa.addTo(map);
-        return capa;
-      })
-      .filter((c): c is L.ImageOverlay => c !== null);
+    const capas = overlays.map((ov) => {
+      const bounds = L.latLngBounds(ov.bounds);
+      const capa = new TileLayerAutenticada({
+        imagenId: ov.imagen_id,
+        bounds,
+        tileSize: 256,
+        minNativeZoom: 0,
+        maxNativeZoom: ov.max_native_zoom ?? 22,
+        maxZoom: MAX_ZOOM,
+        noWrap: true,
+        pane: "tilePane",
+      });
+      capa.addTo(map);
+      return capa;
+    });
 
     return () => {
       capas.forEach((c) => map.removeLayer(c));
     };
-  }, [map, overlays, urls, visible]);
+  }, [map, overlays, visible]);
 
   return null;
 }
@@ -385,13 +411,14 @@ export default function MapaDetecciones({ vueloId }: Props) {
       <MapContainer
         center={centro}
         zoom={18}
+        maxZoom={MAX_ZOOM}
         scrollWheelZoom
         style={{ height: "600px", width: "100%", borderRadius: "0.5rem" }}
       >
         <TileLayer
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
           attribution="&copy; OpenStreetMap contributors"
-          maxZoom={22}
+          maxZoom={MAX_ZOOM}
           maxNativeZoom={19}
         />
         <OrtofotoLayer overlays={overlays} visible={mostrarOrto || editMode} />

@@ -119,6 +119,9 @@ export interface RasterOverlay {
   imagen_id: number;
   nombre: string;
   bounds: [[number, number], [number, number]]; // [[south, west], [north, east]]
+  // Zoom XYZ que iguala la resolución nativa del GeoTIFF (maxNativeZoom de la
+  // capa de tiles). null si no se pudo calcular.
+  max_native_zoom?: number | null;
 }
 
 export interface RasterOverlayResponse {

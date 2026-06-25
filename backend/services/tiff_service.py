@@ -1,6 +1,9 @@
+import io
 import json
 import logging
+import math
 import zipfile
+from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
@@ -9,7 +12,8 @@ from django.conf import settings
 from PIL import Image
 from rasterio.crs import CRS
 from rasterio.enums import Resampling
-from rasterio.transform import array_bounds
+from rasterio.transform import array_bounds, from_bounds
+from rasterio.vrt import WarpedVRT
 from rasterio.warp import (
     calculate_default_transform,
     reproject,
@@ -25,6 +29,13 @@ MEDIA_ROOT = Path(settings.MEDIA_ROOT)
 # Configurables por settings/env para poder subir la nitidez al hacer zoom.
 PREVIEW_MAX_DIM = getattr(settings, "ORTOFOTO_PREVIEW_MAX_DIM", 4096)
 PREVIEW_JPG_QUALITY = getattr(settings, "ORTOFOTO_PREVIEW_JPG_QUALITY", 90)
+
+# Web Mercator (EPSG:3857): CRS de los tiles XYZ (estándar slippy map / Leaflet).
+WEB_MERCATOR = CRS.from_epsg(3857)
+# Resolución (m/px en unidades Mercator) del nivel de zoom 0 con tiles de 256 px:
+# circunferencia ecuatorial (2*pi*R) / 256.
+MERCATOR_RES_Z0 = 2 * math.pi * 6378137.0 / 256.0  # ≈ 156543.0339
+TILE_SIZE = 256
 
 
 class TiffInfo:
@@ -225,6 +236,164 @@ class TiffService:
             "ancho": out_w,
             "alto": out_h,
         }
+
+    # ------------------------------------------------------------------
+    # Tiles XYZ on-demand (slippy map) — nitidez nativa al hacer zoom.
+    #
+    # En vez de servir un único JPG reescalado (que Leaflet estira y se ve
+    # borroso al acercarse), se generan tiles 256×256 en Web Mercator por
+    # nivel de zoom leídos directamente del GeoTIFF a su resolución nativa.
+    # Cada tile lee sólo la ventana del raster que cubre, así funciona con
+    # GeoTIFF pesados (cientos de MB) sin cargarlos enteros en memoria.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _tile_bounds_3857(z: int, x: int, y: int) -> tuple:
+        """Bbox (oeste, sur, este, norte) de un tile XYZ en EPSG:3857."""
+        n = 2 ** z
+        origen = math.pi * 6378137.0  # media circunferencia ecuatorial
+        ancho_tile = (2 * origen) / n
+        west = -origen + x * ancho_tile
+        east = west + ancho_tile
+        north = origen - y * ancho_tile
+        south = north - ancho_tile
+        return west, south, east, north
+
+    @staticmethod
+    def tile_native_maxzoom(tiff_path: str) -> int | None:
+        """
+        Nivel de zoom XYZ que iguala (sin sobre-muestrear) la resolución nativa
+        del GeoTIFF, para que el frontend lo use como ``maxNativeZoom``. Más allá
+        de ese nivel, Leaflet sobre-escala los últimos tiles nativos.
+        """
+        try:
+            with rasterio.open(tiff_path) as src:
+                if not src.crs:
+                    return None
+                b = transform_bounds(
+                    src.crs, WEB_MERCATOR, *src.bounds, densify_pts=21
+                )
+                ancho_m = abs(b[2] - b[0])
+                if ancho_m <= 0 or src.width <= 0:
+                    return None
+                res_nativa = ancho_m / src.width  # m/px en Mercator
+                z = math.log2(MERCATOR_RES_Z0 / res_nativa)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"No se pudo calcular maxzoom del TIFF: {e}")
+            return None
+        return int(max(0, min(24, math.ceil(z))))
+
+    @staticmethod
+    @lru_cache(maxsize=64)
+    def _rango_preview_cache(tiff_path: str, mtime: float, bandas: int):
+        """
+        Rango (lo, hi) por banda para normalizar a 8 bits de forma consistente
+        entre todos los tiles (evita costuras de contraste tile a tile).
+
+        - uint8: devuelve None (color real, sin estiramiento).
+        - mayor profundidad: percentiles 2–98 % calculados UNA vez sobre una
+          versión submuestreada de todo el raster.
+        El resultado se cachea por (path, mtime) para no recomputarlo por tile.
+        """
+        with rasterio.open(tiff_path) as src:
+            if src.dtypes[0] == "uint8":
+                return None
+            escala = min(1.0, 1024 / max(src.width, src.height))
+            sw = max(1, int(src.width * escala))
+            sh = max(1, int(src.height * escala))
+            data = src.read(
+                indexes=list(range(1, bandas + 1)),
+                out_shape=(bandas, sh, sw),
+                resampling=Resampling.bilinear,
+            ).astype(np.float32)
+            rangos = []
+            for banda in data:
+                lo, hi = np.percentile(banda, (2.0, 98.0))
+                if hi <= lo:
+                    lo, hi = float(banda.min()), float(banda.max())
+                    if hi <= lo:
+                        hi = lo + 1.0
+                rangos.append((float(lo), float(hi)))
+            return tuple(rangos)
+
+    @staticmethod
+    def _aplicar_rango(banda: np.ndarray, rango) -> np.ndarray:
+        """Escala una banda a uint8 usando (lo, hi); si es None, asume uint8."""
+        if rango is None:
+            if banda.dtype == np.uint8:
+                return banda
+            return TiffService._normalizar_a_uint8(banda)
+        lo, hi = rango
+        arr = np.clip(banda.astype(np.float32), lo, hi)
+        return ((arr - lo) / (hi - lo) * 255).astype(np.uint8)
+
+    @staticmethod
+    def generar_tile_xyz(
+        tiff_path: str, z: int, x: int, y: int, tile_size: int = TILE_SIZE
+    ) -> bytes | None:
+        """
+        Genera el tile XYZ (z/x/y) del GeoTIFF como PNG RGBA (con transparencia
+        fuera de la ortofoto). Devuelve None si el tile no intersecta el raster.
+        """
+        west, south, east, north = TiffService._tile_bounds_3857(z, x, y)
+        try:
+            with rasterio.open(tiff_path) as src:
+                if not src.crs:
+                    return None
+                sb = transform_bounds(
+                    src.crs, WEB_MERCATOR, *src.bounds, densify_pts=21
+                )
+                # Sin intersección con la extensión del raster → tile vacío.
+                if (
+                    east <= sb[0]
+                    or west >= sb[2]
+                    or north <= sb[1]
+                    or south >= sb[3]
+                ):
+                    return None
+
+                bandas = min(src.count, 3)
+                rango = TiffService._rango_preview_cache(
+                    tiff_path, Path(tiff_path).stat().st_mtime, bandas
+                )
+                rango_por_banda = (
+                    rango if rango is not None else [None] * bandas
+                )
+
+                # La grilla de salida del VRT se define exactamente sobre la
+                # extensión del tile, así read() devuelve tile_size×tile_size y
+                # los píxeles fuera de la ortofoto quedan como nodata (mask=0).
+                dst_transform = from_bounds(
+                    west, south, east, north, tile_size, tile_size
+                )
+                with WarpedVRT(
+                    src,
+                    crs=WEB_MERCATOR,
+                    transform=dst_transform,
+                    width=tile_size,
+                    height=tile_size,
+                    resampling=Resampling.bilinear,
+                    add_alpha=True,
+                ) as vrt:
+                    data = vrt.read(indexes=list(range(1, bandas + 1)))
+                    mask = vrt.read_masks(1)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"No se pudo generar tile {z}/{x}/{y}: {e}")
+            return None
+
+        if bandas >= 3:
+            canales = [
+                TiffService._aplicar_rango(data[i], rango_por_banda[i])
+                for i in range(3)
+            ]
+        else:  # 1 banda → escala de grises replicada en RGB
+            g = TiffService._aplicar_rango(data[0], rango_por_banda[0])
+            canales = [g, g, g]
+
+        rgba = np.dstack([canales[0], canales[1], canales[2], mask])
+        buf = io.BytesIO()
+        Image.fromarray(rgba, mode="RGBA").save(buf, format="PNG", optimize=True)
+        return buf.getvalue()
 
     @staticmethod
     def calcular_total_tiles(

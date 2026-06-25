@@ -19,6 +19,7 @@ from .models import Campo, Deteccion, Imagen, Modulo, Vuelo
 from .serializers import (
     CampoGeoSerializer,
     CampoSerializer,
+    DeteccionEditSerializer,
     DeteccionMapaSerializer,
     DeteccionSerializer,
     ImagenSerializer,
@@ -27,6 +28,7 @@ from .serializers import (
     VueloGeoSerializer,
     VueloSerializer,
 )
+from apps.feedback.services import registrar_correccion
 from .tasks import process_vuelo_task
 from services.annotation_service import AnnotationService
 from services.geo_service import GeoService
@@ -493,13 +495,71 @@ class ImagenViewSet(viewsets.ReadOnlyModelViewSet):
         response["Content-Length"] = len(jpg_bytes)
         return response
 
+    @action(detail=True, methods=["post"], url_path="marcar-revisada")
+    def marcar_revisada(self, request, pk=None):
+        """
+        POST /api/imagenes/{id}/marcar-revisada/  body: {"revisada": bool}
+        Marca/desmarca la imagen como revisada por un humano. Sus detecciones
+        actuales se usan como verdad de referencia para reentrenar.
+        """
+        from django.utils import timezone
 
-class DeteccionViewSet(viewsets.ReadOnlyModelViewSet):
-    serializer_class = DeteccionSerializer
+        imagen = self.get_object()
+        revisada = bool(request.data.get("revisada", True))
+        imagen.revisada = revisada
+        imagen.revisada_en = timezone.now() if revisada else None
+        imagen.save(update_fields=["revisada", "revisada_en"])
+        return Response(ImagenSerializer(imagen).data)
+
+
+def _recalcular_conteos(imagen):
+    """Recalcula el conteo de la imagen y el total del vuelo tras editar
+    detecciones manualmente (idempotente, misma fuente de verdad que la task)."""
+    from django.db.models import Sum
+
+    imagen.conteo_plantas = imagen.detecciones.count()
+    imagen.save(update_fields=["conteo_plantas"])
+    vuelo = imagen.vuelo
+    vuelo.total_plantas = (
+        vuelo.imagenes.aggregate(total=Sum("conteo_plantas"))["total"] or 0
+    )
+    vuelo.save(update_fields=["total_plantas"])
+
+
+def _georreferenciar_deteccion(deteccion):
+    """Proyecta el centro de la caja a WGS84 si la imagen es georreferenciable."""
+    from apps.vision.tasks import referencer_para_imagen
+
+    referencer = referencer_para_imagen(deteccion.imagen)
+    if referencer is None:
+        return
+    cx = (deteccion.x_min + deteccion.x_max) / 2
+    cy = (deteccion.y_min + deteccion.y_max) / 2
+    deteccion.ubicacion = referencer(cx, cy)
+    deteccion.save(update_fields=["ubicacion"])
+
+
+class DeteccionViewSet(viewsets.ModelViewSet):
+    """
+    GET    /api/detecciones/?imagen_id=  → todas las cajas de una imagen
+    POST   /api/detecciones/             → crear caja manual (planta faltante)
+    PUT    /api/detecciones/{id}/        → mover/redimensionar una caja
+    DELETE /api/detecciones/{id}/        → borrar caja (falso positivo)
+
+    Toda edición marca origen=manual/corregida, recalcula conteos, intenta
+    georreferenciar y registra la corrección para el reentrenamiento activo.
+    """
+
     permission_classes = [IsAuthenticated]
     # El visor necesita TODAS las detecciones de una imagen para dibujar los
     # boxes; sin esto la paginación global (PAGE_SIZE=20) recorta el resultado.
     pagination_class = None
+    http_method_names = ["get", "post", "put", "patch", "delete"]
+
+    def get_serializer_class(self):
+        if self.action in ("create", "update", "partial_update"):
+            return DeteccionEditSerializer
+        return DeteccionSerializer
 
     def get_queryset(self):
         qs = Deteccion.objects.all()
@@ -507,6 +567,36 @@ class DeteccionViewSet(viewsets.ReadOnlyModelViewSet):
         if imagen_id:
             qs = qs.filter(imagen_id=imagen_id)
         return qs.order_by("id")
+
+    def perform_create(self, serializer):
+        deteccion = serializer.save(
+            origen=Deteccion.Origen.MANUAL,
+            confianza=serializer.validated_data.get("confianza", 1.0),
+            clase=serializer.validated_data.get("clase", "planta"),
+        )
+        _georreferenciar_deteccion(deteccion)
+        _recalcular_conteos(deteccion.imagen)
+        registrar_correccion(1)
+
+    def perform_update(self, serializer):
+        # Una caja del modelo que se reubica pasa a 'corregida'; una manual
+        # sigue siendo manual.
+        instance = serializer.instance
+        nuevo_origen = (
+            Deteccion.Origen.MANUAL
+            if instance.origen == Deteccion.Origen.MANUAL
+            else Deteccion.Origen.CORREGIDA
+        )
+        deteccion = serializer.save(origen=nuevo_origen)
+        _georreferenciar_deteccion(deteccion)
+        _recalcular_conteos(deteccion.imagen)
+        registrar_correccion(1)
+
+    def perform_destroy(self, instance):
+        imagen = instance.imagen
+        instance.delete()
+        _recalcular_conteos(imagen)
+        registrar_correccion(1)
 
 
 # --------------------------------------------------------------------------

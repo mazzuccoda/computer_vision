@@ -8,6 +8,7 @@ urlpatterns = [
     path("api/", include("apps.vision.urls")),
     path("api/", include("apps.training.urls")),
     path("api/converter/", include("apps.converter.urls")),
+    path("api/reentrenamiento/", include("apps.feedback.urls")),
 ]
 
 if settings.DEBUG:

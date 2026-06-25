@@ -8,6 +8,7 @@ import {
   Map,
   MapPin,
   Plane,
+  Repeat,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -21,6 +22,7 @@ const navItems = [
   { href: "/vuelos", label: "Vuelos", icon: Plane },
   { href: "/mapa", label: "Mapa", icon: Map },
   { href: "/modelos", label: "Modelos", icon: BrainCircuit },
+  { href: "/reentrenamiento", label: "Reentrenamiento", icon: Repeat },
   { href: "/converter", label: "Convertir TIFF", icon: Grid2x2 },
 ];
 

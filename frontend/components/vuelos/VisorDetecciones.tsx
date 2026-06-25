@@ -4,10 +4,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 
+import { Pencil } from "lucide-react";
+
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
+import EditorDetecciones from "@/components/vuelos/EditorDetecciones";
 import api from "@/services/api";
 import type { Deteccion, Imagen } from "@/types";
 
@@ -33,6 +36,7 @@ export default function VisorDetecciones({ imagenes }: Props) {
   const [minConfianza, setMinConfianza] = useState(0.5);
   const [mostrarEtiquetas, setMostrarEtiquetas] = useState(true);
   const [descargando, setDescargando] = useState(false);
+  const [editando, setEditando] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   const imagenActiva = imagenes[idx] ?? null;
@@ -202,6 +206,16 @@ export default function VisorDetecciones({ imagenes }: Props) {
   // ── Guards ────────────────────────────────────────────────────────────────
   if (!imagenActiva) return null;
 
+  if (editando) {
+    return (
+      <EditorDetecciones
+        imagen={imagenActiva}
+        detecciones={detecciones}
+        onClose={() => setEditando(false)}
+      />
+    );
+  }
+
   const detsFiltradas = detecciones.filter(
     (d) => d.confianza >= minConfianza
   );
@@ -222,6 +236,19 @@ export default function VisorDetecciones({ imagenes }: Props) {
         <Badge variant="secondary">{detsFiltradas.length} plantas</Badge>
 
         <div className="flex items-center gap-2 ml-auto flex-wrap">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => setEditando(true)}
+          >
+            <Pencil className="mr-1 h-4 w-4" />
+            Editar
+          </Button>
+          {imagenActiva.revisada && (
+            <Badge className="bg-emerald-600 hover:bg-emerald-600">
+              revisada
+            </Badge>
+          )}
           <span className="text-xs text-muted-foreground">Etiquetas</span>
           <Switch
             checked={mostrarEtiquetas}

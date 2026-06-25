@@ -546,6 +546,17 @@ class ImagenTileView(APIView):
         except (ValueError, FileNotFoundError):
             return HttpResponse(status=404)
 
+        # La primera vez (sin overviews) lanzamos la generación en segundo
+        # plano para que los próximos tiles sean nítidos y rápidos a cualquier
+        # zoom. Es idempotente y está protegida con lock, pero solo encolamos si
+        # aún no está lista ni en curso, para no inundar la cola de Celery.
+        if TiffService._overviews_listos(tiff_path) is None:
+            lock = Path(str(TiffService._ruta_overviews(tiff_path)) + ".building")
+            if not lock.exists():
+                from apps.vision.tasks import construir_overviews_ortofoto_task
+
+                construir_overviews_ortofoto_task.delay(tiff_path)
+
         cache_path = (
             Path(settings.MEDIA_ROOT)
             / "tiles_xyz"

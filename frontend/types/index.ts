@@ -110,6 +110,8 @@ export interface DeteccionMapaProps {
   id: number;
   confianza: number;
   clase: string;
+  origen: DeteccionOrigen;
+  imagen: number;
   bbox?: [number, number, number, number]; // [west, south, east, north]
 }
 

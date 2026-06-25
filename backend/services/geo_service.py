@@ -141,6 +141,49 @@ class GeoService:
         return proyectar
 
     @staticmethod
+    def referencer_inverso_desde_tiff(tiff_path: str):
+        """
+        Construye un proyector WGS84→píxel: el inverso de
+        ``referencer_desde_tiff``. Sirve para persistir cajas dibujadas en el
+        mapa (coordenadas geográficas) como bounding boxes en píxeles de la
+        imagen completa.
+
+        Returns:
+            Una función (lon, lat) -> (x_px, y_px)|None, o None si el archivo
+            no es un GeoTIFF georreferenciado.
+        """
+        import rasterio
+        from rasterio.crs import CRS
+        from rasterio.warp import transform as warp_transform
+
+        try:
+            src = rasterio.open(tiff_path)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"No se pudo abrir TIFF para geo→píxel: {e}")
+            return None
+
+        if not src.crs:
+            src.close()
+            return None
+
+        transform = src.transform
+        src_crs = src.crs
+        src.close()
+        inverso = ~transform
+        dst_crs = CRS.from_epsg(4326)
+
+        def proyectar(lon: float, lat: float):
+            try:
+                xs, ys = warp_transform(dst_crs, src_crs, [lon], [lat])
+                col, row = inverso * (xs[0], ys[0])
+                return float(col), float(row)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"Error proyectando geo→píxel desde TIFF: {e}")
+                return None
+
+        return proyectar
+
+    @staticmethod
     def centroide_desde_tiff(tiff_path: str) -> Point | None:
         """
         Centro geográfico (WGS84) de un GeoTIFF leyendo sus bounds directamente

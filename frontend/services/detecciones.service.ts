@@ -27,6 +27,32 @@ export const deteccionesService = {
     return data;
   },
 
+  /**
+   * Crear una caja desde el mapa, en coordenadas geográficas
+   * [west, south, east, north] (WGS84). El backend la convierte a píxeles.
+   */
+  async createGeo(
+    imagenId: number,
+    geoBbox: [number, number, number, number],
+  ): Promise<Deteccion> {
+    const { data } = await api.post<Deteccion>("/detecciones/", {
+      imagen: imagenId,
+      geo_bbox: geoBbox,
+    });
+    return data;
+  },
+
+  /** Mover/redimensionar una caja desde el mapa (coordenadas geográficas). */
+  async updateGeo(
+    id: number,
+    geoBbox: [number, number, number, number],
+  ): Promise<Deteccion> {
+    const { data } = await api.put<Deteccion>(`/detecciones/${id}/`, {
+      geo_bbox: geoBbox,
+    });
+    return data;
+  },
+
   async remove(id: number): Promise<void> {
     await api.delete(`/detecciones/${id}/`);
   },

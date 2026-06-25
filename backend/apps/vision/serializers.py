@@ -15,6 +15,62 @@ def _punto_desde_latlon(latitud, longitud) -> Point | None:
         return None
 
 
+def _geo_bbox_a_pixel(imagen, geo_bbox):
+    """
+    Convierte una caja geográfica [west, south, east, north] (WGS84) a
+    coordenadas de píxel (x_min, y_min, x_max, y_max) de la imagen, usando el
+    transform/CRS embebido en su GeoTIFF. Recorta a los límites de la imagen.
+
+    Devuelve None si la imagen no es un GeoTIFF georreferenciado o la
+    proyección falla.
+    """
+    import rasterio
+
+    from services.geo_service import GeoService
+
+    nombre = (imagen.nombre_original or imagen.archivo.name or "").lower()
+    if not nombre.endswith((".tif", ".tiff")):
+        return None
+    try:
+        tiff_path = imagen.archivo.path
+    except (ValueError, FileNotFoundError):
+        return None
+
+    proyectar = GeoService.referencer_inverso_desde_tiff(tiff_path)
+    if proyectar is None:
+        return None
+
+    west, south, east, north = geo_bbox
+    esquinas = [
+        proyectar(west, north),
+        proyectar(east, north),
+        proyectar(east, south),
+        proyectar(west, south),
+    ]
+    puntos = [p for p in esquinas if p is not None]
+    if len(puntos) < 4:
+        return None
+
+    xs = [p[0] for p in puntos]
+    ys = [p[1] for p in puntos]
+    x_min, x_max = min(xs), max(xs)
+    y_min, y_max = min(ys), max(ys)
+
+    try:
+        with rasterio.open(tiff_path) as src:
+            ancho, alto = src.width, src.height
+        x_min = max(0.0, min(x_min, ancho))
+        x_max = max(0.0, min(x_max, ancho))
+        y_min = max(0.0, min(y_min, alto))
+        y_max = max(0.0, min(y_max, alto))
+    except Exception:  # noqa: BLE001
+        pass
+
+    if x_max <= x_min or y_max <= y_min:
+        return None
+    return x_min, y_min, x_max, y_max
+
+
 class CampoSerializer(serializers.ModelSerializer):
     class Meta:
         model = Campo
@@ -114,7 +170,21 @@ class DeteccionSerializer(serializers.ModelSerializer):
 
 
 class DeteccionEditSerializer(serializers.ModelSerializer):
-    """Crear / actualizar una detección manualmente desde el visor."""
+    """
+    Crear / actualizar una detección manualmente desde el visor (píxeles) o
+    desde el mapa (coordenadas geográficas, vía ``geo_bbox``).
+    """
+
+    # Caja en coordenadas geográficas [west, south, east, north] (WGS84).
+    # Si se envía, se convierte a píxeles con el transform del GeoTIFF de la
+    # imagen; permite editar detecciones dibujando sobre la ortofoto del mapa.
+    geo_bbox = serializers.ListField(
+        child=serializers.FloatField(),
+        min_length=4,
+        max_length=4,
+        write_only=True,
+        required=False,
+    )
 
     class Meta:
         model = Deteccion
@@ -128,15 +198,37 @@ class DeteccionEditSerializer(serializers.ModelSerializer):
             "y_max",
             "clase",
             "origen",
+            "geo_bbox",
         ]
         read_only_fields = ["id", "origen"]
         extra_kwargs = {
             "imagen": {"required": False},
             "confianza": {"required": False},
             "clase": {"required": False},
+            "x_min": {"required": False},
+            "y_min": {"required": False},
+            "x_max": {"required": False},
+            "y_max": {"required": False},
         }
 
     def validate(self, attrs):
+        geo_bbox = attrs.pop("geo_bbox", None)
+        if geo_bbox is not None:
+            imagen = attrs.get("imagen") or getattr(
+                self.instance, "imagen", None
+            )
+            if imagen is None:
+                raise serializers.ValidationError(
+                    "Se requiere 'imagen' para convertir geo_bbox a píxeles."
+                )
+            px = _geo_bbox_a_pixel(imagen, geo_bbox)
+            if px is None:
+                raise serializers.ValidationError(
+                    "La imagen no es un GeoTIFF georreferenciado; no se puede "
+                    "convertir geo_bbox a píxeles."
+                )
+            attrs["x_min"], attrs["y_min"], attrs["x_max"], attrs["y_max"] = px
+
         x_min = attrs.get("x_min", getattr(self.instance, "x_min", None))
         y_min = attrs.get("y_min", getattr(self.instance, "y_min", None))
         x_max = attrs.get("x_max", getattr(self.instance, "x_max", None))
@@ -228,4 +320,4 @@ class DeteccionMapaSerializer(GeoFeatureModelSerializer):
     class Meta:
         model = Deteccion
         geo_field = "ubicacion"
-        fields = ["id", "confianza", "clase"]
+        fields = ["id", "confianza", "clase", "origen", "imagen"]

@@ -231,3 +231,20 @@ def process_vuelo_task(self, vuelo_id: int) -> dict:
             vuelo.estado = Vuelo.Estado.ERROR
             vuelo.save(update_fields=["estado"])
         raise self.retry(exc=exc, countdown=5)
+
+
+@shared_task(bind=True, max_retries=1, queue="conversion")
+def construir_overviews_ortofoto_task(self, tiff_path: str) -> dict:
+    """
+    Genera en segundo plano la pirámide de overviews externa del GeoTIFF para
+    servir los tiles de la ortofoto nítidos y rápidos a cualquier zoom, sin
+    modificar el archivo original. Idempotente: si ya están, no hace nada.
+    """
+    from services.tiff_service import TiffService
+
+    try:
+        vrt = TiffService.construir_overviews(tiff_path)
+        return {"status": "ok" if vrt else "omitido", "tiff_path": tiff_path}
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Error generando overviews de %s: %s", tiff_path, exc)
+        raise self.retry(exc=exc, countdown=30)

@@ -2,24 +2,27 @@ import io
 import json
 import logging
 import math
+import os
 import zipfile
 from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
 import rasterio
+import rasterio.shutil
 from django.conf import settings
 from PIL import Image
+from rasterio import Affine
 from rasterio.crs import CRS
-from rasterio.enums import Resampling
+from rasterio.enums import ColorInterp, Resampling
 from rasterio.transform import array_bounds, from_bounds
-from rasterio.vrt import WarpedVRT
 from rasterio.warp import (
     calculate_default_transform,
     reproject,
     transform_bounds,
 )
 from rasterio.windows import Window
+from rasterio.windows import from_bounds as window_from_bounds
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +39,11 @@ WEB_MERCATOR = CRS.from_epsg(3857)
 # circunferencia ecuatorial (2*pi*R) / 256.
 MERCATOR_RES_Z0 = 2 * math.pi * 6378137.0 / 256.0  # ≈ 156543.0339
 TILE_SIZE = 256
+# Mientras no exista la pirámide de overviews, leer una ventana mayor a este
+# lado (px) del GeoTIFF a resolución nativa es demasiado lento para servirlo
+# dentro de un request HTTP: esos tiles (zoom alejado) se omiten hasta que la
+# tarea en segundo plano genera los overviews externos.
+TILE_MAX_FULLRES_DIM = 2500
 
 
 class TiffInfo:
@@ -328,31 +336,123 @@ class TiffService:
         return ((arr - lo) / (hi - lo) * 255).astype(np.uint8)
 
     @staticmethod
+    def _ruta_overviews(tiff_path: str) -> Path:
+        """
+        Ruta del sidecar VRT con pirámide de overviews EXTERNA del GeoTIFF.
+        El VRT (+ su .ovr) acelera la lectura decimada a zoom alejado sin tocar
+        el GeoTIFF original. Se guarda junto al archivo: ``{tiff}.ovr.vrt``.
+        """
+        return Path(str(tiff_path) + ".ovr.vrt")
+
+    @staticmethod
+    def _overviews_listos(tiff_path: str) -> Path | None:
+        """Devuelve el VRT de overviews si está generado y al día, si no None."""
+        vrt = TiffService._ruta_overviews(tiff_path)
+        ovr = Path(str(vrt) + ".ovr")
+        try:
+            if (
+                vrt.exists()
+                and ovr.exists()
+                and ovr.stat().st_mtime >= Path(tiff_path).stat().st_mtime
+            ):
+                return vrt
+        except OSError:
+            return None
+        return None
+
+    @staticmethod
+    def construir_overviews(tiff_path: str) -> Path | None:
+        """
+        Genera (una vez) una pirámide de overviews EXTERNA del GeoTIFF como
+        sidecar VRT + .ovr comprimido, sin modificar el archivo original. Es
+        lo que permite servir tiles nítidos y rápidos a cualquier nivel de zoom.
+        Idempotente y protegida con lock para no duplicar el trabajo.
+        """
+        vrt = TiffService._ruta_overviews(tiff_path)
+        if TiffService._overviews_listos(tiff_path):
+            return vrt
+
+        lock = Path(str(vrt) + ".building")
+        try:
+            fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(fd)
+        except FileExistsError:
+            return None  # otro worker ya lo está generando
+
+        vrt_tmp = Path(str(vrt) + ".tmp.vrt")
+        ovr_tmp = Path(str(vrt_tmp) + ".ovr")
+        try:
+            with rasterio.open(tiff_path) as src:
+                lado = max(src.width, src.height)
+            factores = []
+            f = 2
+            while lado / f > TILE_SIZE:
+                factores.append(f)
+                f *= 2
+            if not factores:
+                lock.unlink(missing_ok=True)
+                return None
+
+            rasterio.shutil.copy(tiff_path, str(vrt_tmp), driver="VRT")
+            with rasterio.Env(
+                COMPRESS_OVERVIEW="DEFLATE", GDAL_TIFF_OVR_BLOCKSIZE="512"
+            ):
+                with rasterio.open(str(vrt_tmp), "r+") as ds:
+                    ds.build_overviews(factores, Resampling.average)
+            os.replace(str(ovr_tmp), str(vrt) + ".ovr")
+            os.replace(str(vrt_tmp), str(vrt))
+            logger.info("Overviews externos generados para %s", tiff_path)
+            return vrt
+        except Exception as e:  # noqa: BLE001
+            logger.warning("No se pudieron generar overviews de %s: %s", tiff_path, e)
+            for p in (vrt_tmp, ovr_tmp):
+                p.unlink(missing_ok=True)
+            return None
+        finally:
+            lock.unlink(missing_ok=True)
+
+    @staticmethod
     def generar_tile_xyz(
         tiff_path: str, z: int, x: int, y: int, tile_size: int = TILE_SIZE
     ) -> bytes | None:
         """
-        Genera el tile XYZ (z/x/y) del GeoTIFF como PNG RGBA (con transparencia
-        fuera de la ortofoto). Devuelve None si el tile no intersecta el raster.
+        Genera el tile XYZ (z/x/y) del GeoTIFF como PNG RGBA (transparente fuera
+        de la ortofoto). Devuelve None si el tile no intersecta el raster o si,
+        sin overviews todavía, generarlo sería demasiado lento (zoom alejado).
+
+        Lee una ventana del raster recortada a su extensión y la decima usando
+        los overviews (rápido); luego reproyecta ese array pequeño a Web
+        Mercator. Si existe el sidecar de overviews se lee de ahí.
         """
         west, south, east, north = TiffService._tile_bounds_3857(z, x, y)
+        ruta = TiffService._overviews_listos(tiff_path) or tiff_path
+        tiene_overviews = ruta is not tiff_path
         try:
-            with rasterio.open(tiff_path) as src:
+            with rasterio.open(str(ruta)) as src:
                 if not src.crs:
                     return None
-                sb = transform_bounds(
-                    src.crs, WEB_MERCATOR, *src.bounds, densify_pts=21
+                # Bbox del tile en el CRS del raster → ventana de lectura.
+                sw, ss, se, sn = transform_bounds(
+                    WEB_MERCATOR, src.crs, west, south, east, north,
+                    densify_pts=21,
                 )
-                # Sin intersección con la extensión del raster → tile vacío.
-                if (
-                    east <= sb[0]
-                    or west >= sb[2]
-                    or north <= sb[1]
-                    or south >= sb[3]
-                ):
+                win = window_from_bounds(sw, ss, se, sn, transform=src.transform)
+                col_off = max(0, math.floor(win.col_off))
+                row_off = max(0, math.floor(win.row_off))
+                col_end = min(src.width, math.ceil(win.col_off + win.width))
+                row_end = min(src.height, math.ceil(win.row_off + win.height))
+                if col_end <= col_off or row_end <= row_off:
+                    return None  # tile fuera de la ortofoto
+                win = Window(col_off, row_off, col_end - col_off, row_end - row_off)
+
+                # Sin overviews, leer una ventana grande a resolución nativa es
+                # demasiado lento para un request: se omite hasta tenerlos.
+                lado_lectura = max(win.width, win.height)
+                if not tiene_overviews and lado_lectura > TILE_MAX_FULLRES_DIM:
                     return None
 
                 bandas = min(src.count, 3)
+                tiene_alpha = ColorInterp.alpha in src.colorinterp
                 rango = TiffService._rango_preview_cache(
                     tiff_path, Path(tiff_path).stat().st_mtime, bandas
                 )
@@ -360,35 +460,69 @@ class TiffService:
                     rango if rango is not None else [None] * bandas
                 )
 
-                # La grilla de salida del VRT se define exactamente sobre la
-                # extensión del tile, así read() devuelve tile_size×tile_size y
-                # los píxeles fuera de la ortofoto quedan como nodata (mask=0).
+                # Lectura decimada de la ventana (usa overviews si los hay).
+                ow = max(1, min(int(win.width), tile_size * 2))
+                oh = max(1, min(int(win.height), tile_size * 2))
+                indices = list(range(1, bandas + 1))
+                if tiene_alpha:
+                    indices = indices + [src.count]
+                arr = src.read(
+                    indexes=indices,
+                    window=win,
+                    out_shape=(len(indices), oh, ow),
+                    resampling=Resampling.bilinear,
+                )
+                src_transform = src.window_transform(win) * Affine.scale(
+                    win.width / ow, win.height / oh
+                )
+
+                # Reproyecta el array pequeño a la grilla del tile en Mercator.
                 dst_transform = from_bounds(
                     west, south, east, north, tile_size, tile_size
                 )
-                with WarpedVRT(
-                    src,
-                    crs=WEB_MERCATOR,
-                    transform=dst_transform,
-                    width=tile_size,
-                    height=tile_size,
+                dst = np.zeros(
+                    (len(indices), tile_size, tile_size), dtype=arr.dtype
+                )
+                reproject(
+                    arr,
+                    dst,
+                    src_transform=src_transform,
+                    src_crs=src.crs,
+                    dst_transform=dst_transform,
+                    dst_crs=WEB_MERCATOR,
                     resampling=Resampling.bilinear,
-                    add_alpha=True,
-                ) as vrt:
-                    data = vrt.read(indexes=list(range(1, bandas + 1)))
-                    mask = vrt.read_masks(1)
+                )
+
+                if tiene_alpha:
+                    mask = dst[bandas]
+                else:
+                    # Sin banda alfa: máscara de validez (nodata/extensión).
+                    m = src.read_masks(
+                        1, window=win, out_shape=(oh, ow),
+                        resampling=Resampling.nearest,
+                    )
+                    mask = np.zeros((tile_size, tile_size), dtype=np.uint8)
+                    reproject(
+                        m, mask,
+                        src_transform=src_transform, src_crs=src.crs,
+                        dst_transform=dst_transform, dst_crs=WEB_MERCATOR,
+                        resampling=Resampling.nearest,
+                    )
         except Exception as e:  # noqa: BLE001
             logger.warning(f"No se pudo generar tile {z}/{x}/{y}: {e}")
             return None
 
-        if bandas >= 3:
-            canales = [
-                TiffService._aplicar_rango(data[i], rango_por_banda[i])
-                for i in range(3)
-            ]
-        else:  # 1 banda → escala de grises replicada en RGB
-            g = TiffService._aplicar_rango(data[0], rango_por_banda[0])
-            canales = [g, g, g]
+        if mask.dtype != np.uint8:
+            mask = np.where(mask > 0, 255, 0).astype(np.uint8)
+        if int(mask.max()) == 0:
+            return None  # tile completamente transparente → 204
+
+        canales = [
+            TiffService._aplicar_rango(dst[i], rango_por_banda[i])
+            for i in range(bandas)
+        ]
+        if bandas < 3:  # 1 banda → escala de grises replicada en RGB
+            canales = [canales[0], canales[0], canales[0]]
 
         rgba = np.dstack([canales[0], canales[1], canales[2], mask])
         buf = io.BytesIO()

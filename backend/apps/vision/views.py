@@ -5,6 +5,7 @@ from pathlib import Path
 
 from django.conf import settings
 from django.core.files import File
+from django.db.models import Q
 from django.http import HttpResponse
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
@@ -401,6 +402,12 @@ class ImagenViewSet(viewsets.ReadOnlyModelViewSet):
         vuelo_id = self.request.query_params.get("vuelo_id")
         if vuelo_id:
             qs = qs.filter(vuelo_id=vuelo_id)
+        solo_tiff = self.request.query_params.get("solo_tiff")
+        if solo_tiff in ("1", "true", "True"):
+            qs = qs.filter(
+                Q(nombre_original__iendswith=".tif")
+                | Q(nombre_original__iendswith=".tiff")
+            )
         return qs
 
     @action(detail=True, methods=["get"], url_path="preview")

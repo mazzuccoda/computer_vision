@@ -14,6 +14,29 @@ import { useCreateSesion, useImagenesTiff } from "@/hooks/useConverter";
 
 type Fuente = "upload" | "vuelo";
 
+const ERROR_GENERICO = "No se pudo iniciar la conversión";
+
+function extraerError(err: unknown): string {
+  const res = (err as { response?: { status?: number; data?: unknown } })
+    ?.response;
+  const data = res?.data;
+  if (data && typeof data === "object") {
+    const obj = data as Record<string, unknown>;
+    if (typeof obj.error === "string") return obj.error;
+    if (typeof obj.detail === "string") return obj.detail;
+    const primero = Object.values(obj)[0];
+    if (Array.isArray(primero) && typeof primero[0] === "string") {
+      return primero[0];
+    }
+    if (typeof primero === "string") return primero;
+  }
+  if (res?.status === 413) {
+    return "El archivo es demasiado grande para subirlo. Usá una imagen de vuelo ya cargada.";
+  }
+  if (res?.status) return `${ERROR_GENERICO} (HTTP ${res.status})`;
+  return ERROR_GENERICO;
+}
+
 export default function NuevaConversionPage() {
   const router = useRouter();
   const createSesion = useCreateSesion();
@@ -68,10 +91,7 @@ export default function NuevaConversionPage() {
       toast.success("Conversión iniciada");
       router.push(`/converter/${sesion.id}`);
     } catch (err) {
-      const msg =
-        (err as { response?: { data?: { error?: string } } })?.response?.data
-          ?.error ?? "No se pudo iniciar la conversión";
-      toast.error(msg);
+      toast.error(extraerError(err));
     }
   }
 

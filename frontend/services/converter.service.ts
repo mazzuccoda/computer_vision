@@ -75,10 +75,21 @@ export const converterService = {
   },
 
   // Imágenes TIFF de vuelos existentes (fuente "vuelo").
+  // El backend filtra por extensión con ?solo_tiff=true; recorremos todas
+  // las páginas porque los TIFF pueden estar repartidos entre muchas imágenes.
   async listImagenesTiff(): Promise<Imagen[]> {
-    const { data } =
-      await api.get<PaginatedResponse<Imagen>>("/imagenes/");
-    return data.results.filter((img) =>
+    const imagenes: Imagen[] = [];
+    let page = 1;
+    for (;;) {
+      const { data } = await api.get<PaginatedResponse<Imagen>>(
+        "/imagenes/",
+        { params: { solo_tiff: true, page } },
+      );
+      imagenes.push(...data.results);
+      if (!data.next) break;
+      page += 1;
+    }
+    return imagenes.filter((img) =>
       /\.tiff?$/i.test(img.nombre_original),
     );
   },

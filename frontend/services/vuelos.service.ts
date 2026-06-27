@@ -88,8 +88,8 @@ export const vuelosService = {
     if (onProgress) onProgress(100);
   },
 
-  async process(id: number): Promise<void> {
-    await api.post(`/vuelos/${id}/process/`);
+  async process(id: number, reprocesar = false): Promise<void> {
+    await api.post(`/vuelos/${id}/process/`, reprocesar ? { reprocesar: true } : {});
   },
 
   async results(id: number): Promise<VueloResults> {

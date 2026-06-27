@@ -54,9 +54,11 @@ export function useDeleteVuelo() {
 export function useProcessVuelo() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (id: number) => vuelosService.process(id),
-    onSuccess: (_, id) => {
+    mutationFn: ({ id, reprocesar }: { id: number; reprocesar?: boolean }) =>
+      vuelosService.process(id, reprocesar),
+    onSuccess: (_, { id }) => {
       qc.invalidateQueries({ queryKey: ["vuelo", id] });
+      qc.invalidateQueries({ queryKey: ["vuelo-imagenes", id] });
     },
   });
 }

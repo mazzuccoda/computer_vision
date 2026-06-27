@@ -224,10 +224,27 @@ class VueloViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # ``reprocesar``: rehacer la inferencia de TODO el vuelo con el modelo
+        # activo. El task sólo procesa imágenes con procesada=False, así que sin
+        # este reset un vuelo ya procesado no vuelve a inferir nada (no se podría
+        # aplicar otro modelo). Borra detecciones previas y resetea las imágenes.
+        reprocesar = str(request.data.get("reprocesar", "")).lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+        if reprocesar:
+            Deteccion.objects.filter(imagen__vuelo=vuelo).delete()
+            vuelo.imagenes.update(procesada=False, conteo_plantas=0)
+            vuelo.total_plantas = 0
+
         # Reset progress counters before (re)processing.
         vuelo.estado = Vuelo.Estado.PENDIENTE
         vuelo.imagenes_procesadas = vuelo.imagenes.filter(procesada=True).count()
-        vuelo.save(update_fields=["estado", "imagenes_procesadas"])
+        vuelo.save(
+            update_fields=["estado", "imagenes_procesadas", "total_plantas"]
+        )
 
         process_vuelo_task.delay(vuelo.id)
         return Response(

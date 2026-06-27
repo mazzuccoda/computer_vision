@@ -1,8 +1,8 @@
 "use client";
 
-import { ArrowLeft, Download, Map, Play } from "lucide-react";
+import { ArrowLeft, Download, Map, Play, RotateCcw, Trash2 } from "lucide-react";
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { toast } from "sonner";
 
 import { LoadingSpinner } from "@/components/shared/LoadingSpinner";
@@ -26,6 +26,7 @@ import { ImageUploader } from "@/components/vuelos/ImageUploader";
 import { ProcessingStatus } from "@/components/vuelos/ProcessingStatus";
 import VisorDetecciones from "@/components/vuelos/VisorDetecciones";
 import {
+  useDeleteVuelo,
   useProcessVuelo,
   useVuelo,
   useVueloImagenes,
@@ -38,19 +39,48 @@ export default function VueloDetallePage() {
   const params = useParams<{ id: string }>();
   const id = Number(params.id);
 
+  const router = useRouter();
   const { data: vuelo, isLoading } = useVuelo(id);
   const { data: imagenes } = useVueloImagenes(id, vuelo?.estado);
   const processVuelo = useProcessVuelo();
+  const deleteVuelo = useDeleteVuelo();
 
   if (isLoading) return <LoadingSpinner />;
   if (!vuelo) return <p className="text-muted-foreground">Vuelo no encontrado.</p>;
 
   async function handleProcess() {
     try {
-      await processVuelo.mutateAsync(id);
+      await processVuelo.mutateAsync({ id });
       toast.success("Procesamiento iniciado");
     } catch {
       toast.error("No se pudo iniciar el procesamiento");
+    }
+  }
+
+  async function handleReprocess() {
+    if (
+      !window.confirm(
+        "Esto borra las detecciones actuales y vuelve a procesar todo el " +
+          "vuelo con el modelo activo. ¿Continuar?",
+      )
+    )
+      return;
+    try {
+      await processVuelo.mutateAsync({ id, reprocesar: true });
+      toast.success("Reprocesamiento iniciado con el modelo activo");
+    } catch {
+      toast.error("No se pudo reprocesar el vuelo");
+    }
+  }
+
+  async function handleDelete() {
+    if (!window.confirm(`¿Eliminar el vuelo "${vuelo!.nombre}"?`)) return;
+    try {
+      await deleteVuelo.mutateAsync(id);
+      toast.success("Vuelo eliminado");
+      router.push("/vuelos");
+    } catch {
+      toast.error("No se pudo eliminar el vuelo");
     }
   }
 
@@ -122,6 +152,26 @@ export default function VueloDetallePage() {
               </Button>
             </>
           )}
+          {vuelo.estado !== "procesando" &&
+            vuelo.imagenes_procesadas > 0 && (
+              <Button
+                variant="outline"
+                onClick={handleReprocess}
+                disabled={processVuelo.isPending}
+              >
+                <RotateCcw className="mr-2 h-4 w-4" />
+                Reprocesar con modelo activo
+              </Button>
+            )}
+          <Button
+            variant="outline"
+            className="text-red-600 hover:text-red-700"
+            onClick={handleDelete}
+            disabled={deleteVuelo.isPending || vuelo.estado === "procesando"}
+          >
+            <Trash2 className="mr-2 h-4 w-4" />
+            Eliminar vuelo
+          </Button>
         </div>
       </div>
 

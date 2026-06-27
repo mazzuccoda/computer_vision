@@ -45,6 +45,7 @@ class ModeloSerializer(serializers.ModelSerializer):
             "epochs",
             "img_size",
             "patience",
+            "parametros_augmentation",
             "estado",
             "epoca_actual",
             "porcentaje",

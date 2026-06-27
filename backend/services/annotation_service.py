@@ -24,7 +24,7 @@ class AnnotationService:
         imagen_path: str,
         detecciones: list[dict],
         min_confidence: float = 0.5,
-    ) -> bytes:
+    ) -> tuple[bytes, float]:
         """
         Dibuja bounding boxes sobre la imagen original y devuelve JPG en bytes.
 
@@ -36,7 +36,10 @@ class AnnotationService:
             min_confidence: Umbral mínimo; detecciones por debajo se omiten.
 
         Returns:
-            bytes: JPG anotado listo para HttpResponse.
+            (bytes, escala): JPG anotado y el factor de decimado aplicado
+            (1.0 = resolución nativa; <1.0 para ortofotos gigapíxel que se
+            leen submuestreadas). El frontend usa la escala para reescalar las
+            cajas que dibuja por su cuenta sobre el JPG.
 
         Raises:
             FileNotFoundError: Si imagen_path no existe en disco.
@@ -46,8 +49,27 @@ class AnnotationService:
         if not path.exists():
             raise FileNotFoundError(f"Archivo no encontrado: {imagen_path}")
 
+        # Escala aplicada a las coordenadas de detección (1.0 = sin reescalar).
+        escala = 1.0
+        img = None
+
+        # Los GeoTIFF de ortofoto pueden ser gigapíxel: OpenCV/PIL no pueden
+        # abrirlos enteros (CV_IO_MAX_IMAGE_PIXELS / DecompressionBomb). Se lee
+        # una versión decimada con rasterio y se reescalan las cajas.
+        if path.suffix.lower() in (".tif", ".tiff"):
+            from services.tiff_service import TiffService
+
+            decimado = TiffService.leer_rgb_decimado(str(path))
+            if decimado is not None:
+                rgb, escala = decimado
+                img = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+
         # Intentar leer con OpenCV (falla en TIFF 16-bit y algunos formatos)
-        img = cv2.imread(str(path))
+        if img is None:
+            try:
+                img = cv2.imread(str(path))
+            except cv2.error:
+                img = None
 
         # Fallback PIL para TIFF 16-bit o formatos no soportados por OpenCV
         if img is None:
@@ -71,10 +93,10 @@ class AnnotationService:
         filtradas = [d for d in detecciones if d["confianza"] >= min_confidence]
 
         for det in filtradas:
-            x1 = max(0, min(int(det["x_min"]), ancho - 1))
-            y1 = max(0, min(int(det["y_min"]), alto - 1))
-            x2 = max(0, min(int(det["x_max"]), ancho - 1))
-            y2 = max(0, min(int(det["y_max"]), alto - 1))
+            x1 = max(0, min(int(det["x_min"] * escala), ancho - 1))
+            y1 = max(0, min(int(det["y_min"] * escala), alto - 1))
+            x2 = max(0, min(int(det["x_max"] * escala), ancho - 1))
+            y2 = max(0, min(int(det["y_max"] * escala), alto - 1))
 
             if x2 <= x1 or y2 <= y1:
                 continue
@@ -137,4 +159,4 @@ class AnnotationService:
         ok, buffer = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 90])
         if not ok:
             raise ValueError("No se pudo codificar el JPG anotado.")
-        return buffer.tobytes()
+        return buffer.tobytes(), escala

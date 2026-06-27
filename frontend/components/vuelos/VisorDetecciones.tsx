@@ -63,7 +63,10 @@ export default function VisorDetecciones({ imagenes }: Props) {
       imgEl: HTMLImageElement,
       dets: Deteccion[],
       confianza: number,
-      etiquetas: boolean
+      etiquetas: boolean,
+      // Factor de decimado del JPG (ortofotos gigapíxel se sirven reducidas):
+      // las coordenadas de detección están en píxeles nativos, hay que escalarlas.
+      escala = 1
     ) => {
       const { naturalWidth: W, naturalHeight: H } = imgEl;
       ctx.canvas.width = W;
@@ -76,10 +79,10 @@ export default function VisorDetecciones({ imagenes }: Props) {
       const filtradas = dets.filter((d) => d.confianza >= confianza);
 
       filtradas.forEach((det) => {
-        const x1 = Math.max(0, det.x_min);
-        const y1 = Math.max(0, det.y_min);
-        const w = det.x_max - x1;
-        const h = det.y_max - y1;
+        const x1 = Math.max(0, det.x_min * escala);
+        const y1 = Math.max(0, det.y_min * escala);
+        const w = det.x_max * escala - x1;
+        const h = det.y_max * escala - y1;
         if (w <= 0 || h <= 0) return;
 
         const color = colorPorClase(det.clase);
@@ -140,10 +143,18 @@ export default function VisorDetecciones({ imagenes }: Props) {
           responseType: "blob",
         })
         .then((res) => {
+          const escala = parseFloat(res.headers["x-annotated-scale"]) || 1;
           const url = URL.createObjectURL(res.data);
           const img = new Image();
           img.onload = () => {
-            dibujar(ctx, img, detecciones, minConfianza, mostrarEtiquetas);
+            dibujar(
+              ctx,
+              img,
+              detecciones,
+              minConfianza,
+              mostrarEtiquetas,
+              escala
+            );
             URL.revokeObjectURL(url);
           };
           img.onerror = () => URL.revokeObjectURL(url);

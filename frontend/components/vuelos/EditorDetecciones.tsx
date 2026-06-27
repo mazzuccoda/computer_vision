@@ -90,11 +90,17 @@ export default function EditorDetecciones({
     let revoked: string | null = null;
     const esTiff = /\.(tif|tiff)$/i.test(imagen.nombre_original ?? "");
 
-    const cargar = (url: string, revoke: boolean) => {
+    // El JPG del TIFF puede venir decimado (ortofotos gigapíxel): las cajas se
+    // guardan en píxeles nativos, así que el lienzo trabaja en coordenadas
+    // nativas (dims = tamaño nativo = tamaño mostrado / escala).
+    const cargar = (url: string, revoke: boolean, escala = 1) => {
       const img = new Image();
       if (!revoke) img.crossOrigin = "anonymous";
       img.onload = () => {
-        setDims({ w: img.naturalWidth, h: img.naturalHeight });
+        setDims({
+          w: Math.round(img.naturalWidth / escala),
+          h: Math.round(img.naturalHeight / escala),
+        });
         setImgUrl(url);
       };
       img.onerror = () => {
@@ -110,7 +116,10 @@ export default function EditorDetecciones({
         .get(`/imagenes/${imagen.id}/annotated/?min_confidence=1`, {
           responseType: "blob",
         })
-        .then((res) => cargar(URL.createObjectURL(res.data), true))
+        .then((res) => {
+          const escala = parseFloat(res.headers["x-annotated-scale"]) || 1;
+          cargar(URL.createObjectURL(res.data), true, escala);
+        })
         .catch(() => toast.error("No se pudo cargar el TIFF para editar."));
     } else {
       cargar(imagen.archivo, false);

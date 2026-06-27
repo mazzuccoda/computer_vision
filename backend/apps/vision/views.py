@@ -1,4 +1,5 @@
 import csv
+import logging
 import os
 import shutil
 from pathlib import Path
@@ -34,6 +35,8 @@ from .tasks import process_vuelo_task
 from services.annotation_service import AnnotationService
 from services.geo_service import GeoService
 from services.tiff_service import TiffService
+
+logger = logging.getLogger(__name__)
 
 # --------------------------------------------------------------------------
 # Auth
@@ -485,7 +488,7 @@ class ImagenViewSet(viewsets.ReadOnlyModelViewSet):
         )
 
         try:
-            jpg_bytes = AnnotationService.generar_imagen_anotada(
+            jpg_bytes, escala = AnnotationService.generar_imagen_anotada(
                 imagen_path=imagen.archivo.path,
                 detecciones=detecciones,
                 min_confidence=min_conf,
@@ -498,6 +501,12 @@ class ImagenViewSet(viewsets.ReadOnlyModelViewSet):
             return Response(
                 {"error": str(e)}, status=status.HTTP_400_BAD_REQUEST
             )
+        except Exception as e:  # noqa: BLE001
+            logger.exception("Error generando JPG anotado de imagen %s", pk)
+            return Response(
+                {"error": f"No se pudo generar la imagen anotada: {e}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
 
         base = imagen.nombre_original.rsplit(".", 1)[0]
         nombre = f"anotada_{base}.jpg"
@@ -508,6 +517,9 @@ class ImagenViewSet(viewsets.ReadOnlyModelViewSet):
             f'{disposition}; filename="{nombre}"'
         )
         response["Content-Length"] = len(jpg_bytes)
+        # Factor de decimado: el frontend reescala las cajas que dibuja sobre
+        # el JPG (las ortofotos gigapíxel se sirven submuestreadas).
+        response["X-Annotated-Scale"] = repr(float(escala))
         return response
 
     @action(detail=True, methods=["post"], url_path="marcar-revisada")

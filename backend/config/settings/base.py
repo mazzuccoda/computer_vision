@@ -122,6 +122,13 @@ STATIC_ROOT = BASE_DIR / "staticfiles"
 MEDIA_URL = "/media/"
 MEDIA_ROOT = config("MEDIA_ROOT", default=str(BASE_DIR / "media"))
 
+# Detrás de un proxy/CDN que termina TLS (nginx/Cloudflare), respetar el
+# esquema original para construir URLs absolutas (p. ej. de media) como https.
+# Sin esto, las URLs salen como http y el navegador las bloquea por
+# "mixed content" al cargarlas desde la app servida por https.
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+USE_X_FORWARDED_HOST = True
+
 # Path where YOLO weights live (best.pt or fallback).
 MODELS_PATH = config("MODELS_PATH", default=str(BASE_DIR / "models"))
 
@@ -201,6 +208,10 @@ CORS_ALLOWED_ORIGINS = config(
     default="http://localhost:3000,http://127.0.0.1:3000",
     cast=Csv(),
 )
+# Headers de respuesta que el navegador puede leer desde JS (cross-origin).
+# X-Annotated-Scale: factor de decimado del JPG anotado de ortofotos gigapíxel,
+# para que el frontend reescale las cajas de detección.
+CORS_EXPOSE_HEADERS = ["X-Annotated-Scale"]
 
 # --------------------------------------------------------------------------
 # Logging

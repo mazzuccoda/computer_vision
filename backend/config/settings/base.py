@@ -132,6 +132,24 @@ USE_X_FORWARDED_HOST = True
 # Path where YOLO weights live (best.pt or fallback).
 MODELS_PATH = config("MODELS_PATH", default=str(BASE_DIR / "models"))
 
+# --------------------------------------------------------------------------
+# Ajustes de inferencia YOLO (tuneables sin reentrenar ni redeployar código)
+# --------------------------------------------------------------------------
+# IoU del NMS interno de YOLO por inferencia (default Ultralytics = 0.7). Más
+# bajo elimina boxes duplicados sobre la misma planta; subir si plantas muy
+# juntas se fusionan/pierden. Rango útil ~0.3–0.6.
+YOLO_IOU_INFERENCIA = config("YOLO_IOU_INFERENCIA", default=0.5, cast=float)
+# IoU del NMS entre tiles vecinos (deduplica bordes en TIFF troceado).
+YOLO_IOU_TILES = config("YOLO_IOU_TILES", default=0.45, cast=float)
+# Test-Time Augmentation: mejora el recall (~2-3x más lento). Activar con True.
+YOLO_TTA = config("YOLO_TTA", default=False, cast=bool)
+# NMS agnóstico de clase (suprime solapamientos entre clases distintas).
+YOLO_AGNOSTIC_NMS = config("YOLO_AGNOSTIC_NMS", default=False, cast=bool)
+# Troceado de TIFF en inferencia: debe coincidir con el tamaño de tile del
+# entrenamiento. Más overlap reduce plantas perdidas en bordes (más lento).
+YOLO_TILE_SIZE = config("YOLO_TILE_SIZE", default=640, cast=int)
+YOLO_TILE_OVERLAP = config("YOLO_TILE_OVERLAP", default=64, cast=int)
+
 # Ortofoto preview (imageOverlay del mapa/editor): lado máximo en píxeles del
 # JPG reproyectado a EPSG:4326 y calidad JPEG. Subir mejora la nitidez al hacer
 # zoom (a costa de memoria/tiempo al regenerar el preview cacheado).

@@ -99,6 +99,41 @@ def ejecutar_entrenamiento(modelo) -> dict:
         raise
 
 
+@shared_task
+def validate_dataset_task(dataset_id: int) -> dict:
+    """Valida y prepara un dataset fuera del request HTTP.
+
+    La validación (descomprimir + recorrer imágenes/labels + split) puede
+    tardar más que el timeout del proxy/CDN para datasets grandes; por eso
+    corre en Celery y el frontend consulta el estado por polling.
+    """
+    from apps.training.models import DatasetEntrenamiento
+    from services.dataset_service import (
+        DatasetService,
+        DatasetValidationError,
+    )
+
+    dataset = DatasetEntrenamiento.objects.get(id=dataset_id)
+    try:
+        dataset.estado = DatasetEntrenamiento.Estado.VALIDANDO
+        dataset.save(update_fields=["estado"])
+        res = DatasetService.validar_y_preparar(dataset)
+        dataset.num_imagenes = res["num_imagenes"]
+        dataset.clases = res["clases"]
+        dataset.reporte_validacion = res["reporte"]
+        dataset.estado = DatasetEntrenamiento.Estado.VALIDO
+    except DatasetValidationError as e:
+        dataset.estado = DatasetEntrenamiento.Estado.INVALIDO
+        dataset.reporte_validacion = {"error": str(e)}
+    except Exception as e:  # noqa: BLE001
+        dataset.estado = DatasetEntrenamiento.Estado.INVALIDO
+        dataset.reporte_validacion = {
+            "error": f"Error inesperado al validar el dataset: {e}"
+        }
+    dataset.save()
+    return {"dataset_id": dataset_id, "estado": dataset.estado}
+
+
 @shared_task(bind=True, max_retries=1, queue="training")
 def train_model_task(self, modelo_id: int) -> dict:
     from apps.training.models import ModeloEntrenado

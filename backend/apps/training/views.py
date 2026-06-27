@@ -1,55 +1,132 @@
 import json
+import shutil
 import tempfile
 import zipfile as zf
 from pathlib import Path
 
 from django.conf import settings
+from django.core.files import File
 from django.http import FileResponse
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
+from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from .models import DatasetEntrenamiento, ModeloEntrenado
 from .serializers import DatasetSerializer, ModeloSerializer
-from .tasks import train_model_task
+from .tasks import train_model_task, validate_dataset_task
 
 
 class DatasetViewSet(viewsets.ModelViewSet):
     """
-    POST /api/datasets/       → subir .zip (multipart) + validación inmediata
-    GET  /api/datasets/       → listar
-    GET  /api/datasets/{id}/  → detalle con reporte de validación
+    POST /api/datasets/              → subir .zip (multipart) + validación async
+    POST /api/datasets/upload-chunk/ → subir .zip por fragmentos (archivos grandes)
+    GET  /api/datasets/              → listar
+    GET  /api/datasets/{id}/         → detalle + estado de validación (polling)
     """
 
     queryset = DatasetEntrenamiento.objects.all().order_by("-creado_en")
     serializer_class = DatasetSerializer
     permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
     http_method_names = ["get", "post", "delete"]
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         dataset = serializer.save()
-
-        from services.dataset_service import (
-            DatasetService,
-            DatasetValidationError,
+        self._lanzar_validacion(dataset)
+        return Response(
+            DatasetSerializer(dataset).data, status=status.HTTP_201_CREATED
         )
 
-        try:
-            dataset.estado = "validando"
-            dataset.save(update_fields=["estado"])
-            res = DatasetService.validar_y_preparar(dataset)
-            dataset.num_imagenes = res["num_imagenes"]
-            dataset.clases = res["clases"]
-            dataset.reporte_validacion = res["reporte"]
-            dataset.estado = "valido"
-        except DatasetValidationError as e:
-            dataset.estado = "invalido"
-            dataset.reporte_validacion = {"error": str(e)}
-        dataset.save()
+    @staticmethod
+    def _lanzar_validacion(dataset: DatasetEntrenamiento) -> None:
+        dataset.estado = DatasetEntrenamiento.Estado.VALIDANDO
+        dataset.save(update_fields=["estado"])
+        validate_dataset_task.delay(dataset.id)
 
+    @action(
+        detail=False,
+        methods=["post"],
+        url_path="upload-chunk",
+        parser_classes=[MultiPartParser, FormParser],
+    )
+    def upload_chunk(self, request):
+        """Subida por fragmentos para datasets grandes.
+
+        El cliente parte el .zip en fragmentos < límite del proxy/CDN (p. ej.
+        Cloudflare corta en 100 MB) y los envía en orden con el mismo
+        ``upload_id``. Al recibir el último se reensambla, se crea el dataset
+        y se lanza la validación en Celery.
+        """
+        chunk = request.FILES.get("chunk")
+        upload_id = request.data.get("upload_id", "")
+        filename = request.data.get("filename", "")
+        nombre = request.data.get("nombre", "")
+        formato = request.data.get("formato", DatasetEntrenamiento.Formato.YOLO)
+        try:
+            index = int(request.data.get("chunk_index"))
+            total = int(request.data.get("total_chunks"))
+        except (TypeError, ValueError):
+            return Response(
+                {"detail": "chunk_index/total_chunks inválidos."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        safe_id = "".join(c for c in upload_id if c.isalnum() or c in "-_")
+        safe_name = Path(filename).name
+        if chunk is None or not safe_id or not safe_name or total < 1:
+            return Response(
+                {"detail": "Faltan datos del fragmento."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        tmp_dir = Path(settings.MEDIA_ROOT) / "tmp_uploads" / safe_id
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        part_path = tmp_dir / f"{index:06d}.part"
+        with open(part_path, "wb") as dest:
+            for piece in chunk.chunks():
+                dest.write(piece)
+
+        if len(list(tmp_dir.glob("*.part"))) < total:
+            return Response(
+                {
+                    "detail": "Fragmento recibido.",
+                    "recibido": index + 1,
+                    "total": total,
+                },
+                status=status.HTTP_202_ACCEPTED,
+            )
+
+        assembled = tmp_dir / "assembled"
+        with open(assembled, "wb") as out:
+            for i in range(total):
+                part = tmp_dir / f"{i:06d}.part"
+                if not part.exists():
+                    shutil.rmtree(tmp_dir, ignore_errors=True)
+                    return Response(
+                        {
+                            "detail": (
+                                f"Falta el fragmento {i}; reintentá la subida."
+                            )
+                        },
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                with open(part, "rb") as pf:
+                    shutil.copyfileobj(pf, out, length=1024 * 1024)
+
+        dataset = DatasetEntrenamiento(
+            nombre=nombre or safe_name,
+            formato=formato or DatasetEntrenamiento.Formato.YOLO,
+        )
+        with open(assembled, "rb") as f:
+            dataset.archivo.save(safe_name, File(f), save=True)
+
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+        self._lanzar_validacion(dataset)
         return Response(
             DatasetSerializer(dataset).data, status=status.HTTP_201_CREATED
         )

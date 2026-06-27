@@ -41,6 +41,27 @@ const schema = z.object({
 
 type FormValues = z.input<typeof schema>;
 
+function mensajeErrorUpload(err: unknown, generico: string): string {
+  const res = (err as { response?: { status?: number; data?: unknown } })
+    ?.response;
+  if (res?.status === 413) {
+    return "El archivo es demasiado grande para el servidor. Probá de nuevo o reducí el tamaño del dataset.";
+  }
+  const data = res?.data;
+  if (data && typeof data === "object") {
+    const obj = data as Record<string, unknown>;
+    if (typeof obj.error === "string") return obj.error;
+    if (typeof obj.detail === "string") return obj.detail;
+    const primero = Object.values(obj)[0];
+    if (Array.isArray(primero) && typeof primero[0] === "string") {
+      return primero[0];
+    }
+    if (typeof primero === "string") return primero;
+  }
+  if (res?.status) return `${generico} (HTTP ${res.status})`;
+  return generico;
+}
+
 const FORMATOS: { value: DatasetEntrenamiento["formato"]; label: string }[] = [
   { value: "yolo", label: "YOLO Ultralytics (recomendado)" },
   { value: "cvat_xml", label: "CVAT for Images 1.1 XML (Fase 2)" },
@@ -95,8 +116,8 @@ export default function NuevoModeloPage() {
       } else {
         toast.success("Dataset validado");
       }
-    } catch {
-      toast.error("No se pudo subir el dataset");
+    } catch (err) {
+      toast.error(mensajeErrorUpload(err, "No se pudo subir el dataset"));
     }
   }
 
@@ -113,8 +134,8 @@ export default function NuevoModeloPage() {
       });
       toast.success("Entrenamiento iniciado");
       router.push(`/modelos/${modelo.id}`);
-    } catch {
-      toast.error("No se pudo iniciar el entrenamiento");
+    } catch (err) {
+      toast.error(mensajeErrorUpload(err, "No se pudo iniciar el entrenamiento"));
     }
   }
 
@@ -202,7 +223,7 @@ export default function NuevoModeloPage() {
             <Upload className="h-8 w-8" />
             <span>{file ? file.name : "Seleccioná el export (.zip)"}</span>
             <span className="text-xs">
-              Estructura YOLO: images/, labels/, classes.txt
+              Estructura YOLO: images/, labels/, classes.txt · archivos grandes soportados
             </span>
           </button>
 

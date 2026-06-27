@@ -41,14 +41,11 @@ const schema = z.object({
 
 type FormValues = z.input<typeof schema>;
 
-// Cloudflare corta los requests con body > 100 MB antes de llegar al backend.
-const MAX_UPLOAD_MB = 100;
-
 function mensajeErrorUpload(err: unknown, generico: string): string {
   const res = (err as { response?: { status?: number; data?: unknown } })
     ?.response;
   if (res?.status === 413) {
-    return `El .zip supera el límite de ${MAX_UPLOAD_MB} MB para subir por la web. Reducí el tamaño del dataset o pedí subirlo por otra vía.`;
+    return "El archivo es demasiado grande para el servidor. Probá de nuevo o reducí el tamaño del dataset.";
   }
   const data = res?.data;
   if (data && typeof data === "object") {
@@ -103,12 +100,6 @@ export default function NuevoModeloPage() {
     }
     if (!file) {
       toast.error("Seleccioná un archivo .zip");
-      return;
-    }
-    if (file.size > MAX_UPLOAD_MB * 1024 * 1024) {
-      toast.error(
-        `El .zip pesa ${(file.size / 1024 / 1024).toFixed(0)} MB y supera el límite de ${MAX_UPLOAD_MB} MB para subir por la web.`,
-      );
       return;
     }
     setProgress(0);
@@ -232,7 +223,7 @@ export default function NuevoModeloPage() {
             <Upload className="h-8 w-8" />
             <span>{file ? file.name : "Seleccioná el export (.zip)"}</span>
             <span className="text-xs">
-              Estructura YOLO: images/, labels/, classes.txt · máx. {MAX_UPLOAD_MB} MB
+              Estructura YOLO: images/, labels/, classes.txt · archivos grandes soportados
             </span>
           </button>
 

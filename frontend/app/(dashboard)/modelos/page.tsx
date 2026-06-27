@@ -1,7 +1,8 @@
 "use client";
 
-import { Plus } from "lucide-react";
+import { Plus, Trash2, XCircle } from "lucide-react";
 import Link from "next/link";
+import { toast } from "sonner";
 
 import { LoadingSpinner } from "@/components/shared/LoadingSpinner";
 import { EstadoModeloBadge } from "@/components/modelos/EstadoModeloBadge";
@@ -15,7 +16,18 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { useModelos } from "@/hooks/useModelos";
+import {
+  useCancelModelo,
+  useDeleteModelo,
+  useModelos,
+} from "@/hooks/useModelos";
+import { ModeloEntrenado } from "@/types";
+
+const EN_PROGRESO: ModeloEntrenado["estado"][] = [
+  "pendiente",
+  "preparando",
+  "entrenando",
+];
 
 function fmtMetric(value?: number): string {
   if (value === undefined || value === null) return "—";
@@ -24,6 +36,28 @@ function fmtMetric(value?: number): string {
 
 export default function ModelosPage() {
   const { data, isLoading } = useModelos();
+  const cancelar = useCancelModelo();
+  const eliminar = useDeleteModelo();
+
+  async function handleCancelar(m: ModeloEntrenado) {
+    if (!window.confirm(`¿Cancelar el entrenamiento de "${m.nombre}"?`)) return;
+    try {
+      await cancelar.mutateAsync(m.id);
+      toast.success("Entrenamiento cancelado");
+    } catch {
+      toast.error("No se pudo cancelar el entrenamiento");
+    }
+  }
+
+  async function handleEliminar(m: ModeloEntrenado) {
+    if (!window.confirm(`¿Eliminar el modelo "${m.nombre}"?`)) return;
+    try {
+      await eliminar.mutateAsync(m.id);
+      toast.success("Modelo eliminado");
+    } catch {
+      toast.error("No se pudo eliminar (¿está activo?)");
+    }
+  }
 
   return (
     <div className="space-y-6">
@@ -56,6 +90,7 @@ export default function ModelosPage() {
                 <TableHead>Estado</TableHead>
                 <TableHead className="text-right">mAP50</TableHead>
                 <TableHead className="text-center">Activo</TableHead>
+                <TableHead className="text-right">Acciones</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -91,6 +126,34 @@ export default function ModelosPage() {
                         ACTIVO
                       </Badge>
                     )}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <div className="flex justify-end gap-1">
+                      {EN_PROGRESO.includes(m.estado) && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="text-amber-700 hover:text-amber-800"
+                          disabled={cancelar.isPending}
+                          onClick={() => handleCancelar(m)}
+                        >
+                          <XCircle className="mr-1 h-4 w-4" />
+                          Cancelar
+                        </Button>
+                      )}
+                      {!m.activo && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="text-red-600 hover:text-red-700"
+                          disabled={eliminar.isPending}
+                          onClick={() => handleEliminar(m)}
+                        >
+                          <Trash2 className="mr-1 h-4 w-4" />
+                          Eliminar
+                        </Button>
+                      )}
+                    </div>
                   </TableCell>
                 </TableRow>
               ))}

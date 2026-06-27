@@ -42,6 +42,10 @@ class ModeloEntrenado(models.Model):
         ENTRENANDO = "entrenando", "Entrenando"
         COMPLETADO = "completado", "Completado"
         ERROR = "error", "Error"
+        CANCELADO = "cancelado", "Cancelado"
+
+    # Estados en los que el entrenamiento sigue en curso (se puede cancelar).
+    ESTADOS_EN_PROGRESO = ("pendiente", "preparando", "entrenando")
 
     class ModeloBase(models.TextChoices):
         NANO = "yolov8n.pt", "YOLOv8 Nano (más rápido, CPU)"
@@ -80,6 +84,7 @@ class ModeloEntrenado(models.Model):
     activo = models.BooleanField(default=False)
     notas = models.TextField(blank=True)
     error_mensaje = models.TextField(blank=True)
+    celery_task_id = models.CharField(max_length=255, blank=True)
     creado_en = models.DateTimeField(auto_now_add=True)
     completado_en = models.DateTimeField(null=True, blank=True)
 

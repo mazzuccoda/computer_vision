@@ -232,7 +232,13 @@ export interface ModeloEntrenado {
   img_size: number;
   patience: number;
   parametros_augmentation?: Record<string, number>;
-  estado: "pendiente" | "preparando" | "entrenando" | "completado" | "error";
+  estado:
+    | "pendiente"
+    | "preparando"
+    | "entrenando"
+    | "completado"
+    | "error"
+    | "cancelado";
   epoca_actual: number;
   porcentaje: number;
   metricas: {

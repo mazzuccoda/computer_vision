@@ -1,4 +1,5 @@
 import json
+import logging
 import shutil
 import tempfile
 import zipfile as zf
@@ -16,6 +17,8 @@ from rest_framework.response import Response
 from .models import DatasetEntrenamiento, ModeloEntrenado
 from .serializers import DatasetSerializer, ModeloSerializer
 from .tasks import train_model_task, validate_dataset_task
+
+logger = logging.getLogger(__name__)
 
 
 class DatasetViewSet(viewsets.ModelViewSet):
@@ -139,6 +142,7 @@ class ModeloViewSet(viewsets.ModelViewSet):
     GET    /api/modelos/{id}/           → estado + epoca_actual + % + métricas
     GET    /api/modelos/{id}/results/   → métricas detalladas + URLs de gráficas
     POST   /api/modelos/{id}/activate/  → marcar activo → YOLOService recarga
+    POST   /api/modelos/{id}/cancel/    → cancelar un entrenamiento en curso
     GET    /api/modelos/{id}/download/  → zip: best.pt + data.yaml + metrics.json
     DELETE /api/modelos/{id}/           → eliminar (bloqueado si está activo)
     """
@@ -152,10 +156,50 @@ class ModeloViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         modelo = serializer.save()
-        train_model_task.apply_async(args=[modelo.id], queue="training")
+        async_result = train_model_task.apply_async(
+            args=[modelo.id], queue="training"
+        )
+        modelo.celery_task_id = async_result.id
+        modelo.save(update_fields=["celery_task_id"])
         return Response(
             ModeloSerializer(modelo).data, status=status.HTTP_201_CREATED
         )
+
+    @staticmethod
+    def _detener_tarea(modelo) -> None:
+        """Mata la tarea de Celery del entrenamiento (sin reiniciar el worker).
+
+        SIGKILL al proceso hijo del pool que la ejecuta; el worker se recupera
+        solo. Si no hay task_id (corridas viejas) no hace nada.
+        """
+        if not modelo.celery_task_id:
+            return
+        try:
+            from config.celery import app
+
+            app.control.revoke(
+                modelo.celery_task_id, terminate=True, signal="SIGKILL"
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "No se pudo revocar la tarea Celery %s del modelo %s",
+                modelo.celery_task_id,
+                modelo.pk,
+            )
+
+    @action(detail=True, methods=["post"])
+    def cancel(self, request, pk=None):
+        modelo = self.get_object()
+        if modelo.estado not in ModeloEntrenado.ESTADOS_EN_PROGRESO:
+            return Response(
+                {"error": "El entrenamiento no está en curso."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        self._detener_tarea(modelo)
+        modelo.estado = ModeloEntrenado.Estado.CANCELADO
+        modelo.error_mensaje = "Cancelado por el usuario."
+        modelo.save(update_fields=["estado", "error_mensaje"])
+        return Response(ModeloSerializer(modelo).data)
 
     def destroy(self, request, *args, **kwargs):
         modelo = self.get_object()
@@ -164,6 +208,8 @@ class ModeloViewSet(viewsets.ModelViewSet):
                 {"error": "Activar otro modelo antes de eliminar este."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        if modelo.estado in ModeloEntrenado.ESTADOS_EN_PROGRESO:
+            self._detener_tarea(modelo)
         return super().destroy(request, *args, **kwargs)
 
     @action(detail=True, methods=["get"])

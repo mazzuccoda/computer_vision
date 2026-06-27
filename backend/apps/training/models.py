@@ -45,8 +45,9 @@ class ModeloEntrenado(models.Model):
 
     class ModeloBase(models.TextChoices):
         NANO = "yolov8n.pt", "YOLOv8 Nano (más rápido, CPU)"
-        SMALL = "yolov8s.pt", "YOLOv8 Small"
+        SMALL = "yolov8s.pt", "YOLOv8 Small (mejor recall)"
         MEDIUM = "yolov8m.pt", "YOLOv8 Medium"
+        ACTIVO = "activo", "Modelo activo actual (fine-tuning)"
 
     nombre = models.CharField(max_length=200)
     version = models.CharField(max_length=20, blank=True)  # v1, v2, ... (auto)
@@ -61,6 +62,12 @@ class ModeloEntrenado(models.Model):
     epochs = models.IntegerField(default=50)
     img_size = models.IntegerField(default=640)
     patience = models.IntegerField(default=10)
+    parametros_augmentation = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Augmentations YOLO usadas (flipud, degrees, hsv_v, "
+        "mosaic, mixup, ...). Vacío = defaults de Ultralytics.",
+    )
     estado = models.CharField(
         max_length=20, choices=Estado.choices, default=Estado.PENDIENTE
     )

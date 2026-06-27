@@ -12,6 +12,7 @@ export type ModeloInput = {
   epochs: number;
   img_size: number;
   patience: number;
+  parametros_augmentation?: Record<string, number>;
   notas?: string;
 };
 

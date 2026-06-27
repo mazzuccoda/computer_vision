@@ -227,10 +227,11 @@ export interface ModeloEntrenado {
   version: string;
   dataset: number;
   dataset_nombre?: string;
-  base_model: "yolov8n.pt" | "yolov8s.pt" | "yolov8m.pt";
+  base_model: "yolov8n.pt" | "yolov8s.pt" | "yolov8m.pt" | "activo";
   epochs: number;
   img_size: number;
   patience: number;
+  parametros_augmentation?: Record<string, number>;
   estado: "pendiente" | "preparando" | "entrenando" | "completado" | "error";
   epoca_actual: number;
   porcentaje: number;

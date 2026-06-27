@@ -16,6 +16,23 @@ class TrainingResult:
 
 
 class TrainingService:
+    # Augmentations por defecto pensadas para fotos aéreas de drones: el aparato
+    # vuela en cualquier dirección, así que rotación/flips ayudan, y la
+    # variación de brillo (hsv_v) cubre distintas horas/sombras. Sólo se usan si
+    # el modelo no trae parámetros explícitos.
+    DEFAULT_AUGMENTATION = {
+        "flipud": 0.5,
+        "fliplr": 0.5,
+        "degrees": 45.0,
+        "translate": 0.1,
+        "scale": 0.3,
+        "hsv_h": 0.015,
+        "hsv_s": 0.5,
+        "hsv_v": 0.3,
+        "mosaic": 1.0,
+        "mixup": 0.1,
+    }
+
     @staticmethod
     def entrenar(
         base: str,
@@ -25,9 +42,17 @@ class TrainingService:
         patience: int,
         output_name: str,
         on_epoch_end=None,
+        augmentation_params: dict | None = None,
     ) -> TrainingResult:
         """
         Ejecuta YOLO.train() con callback de progreso por época.
+
+        ``base`` puede ser un modelo preentrenado (``yolov8s.pt``) o la ruta a un
+        ``best.pt`` existente para fine-tuning (transfer learning).
+
+        ``augmentation_params`` sobrescribe los augmentations por defecto; las
+        claves no provistas usan ``DEFAULT_AUGMENTATION``.
+
         Returns TrainingResult con path a best.pt y métricas.
         """
         from ultralytics import YOLO
@@ -37,6 +62,8 @@ class TrainingService:
 
         if on_epoch_end:
             model.add_callback("on_train_epoch_end", on_epoch_end)
+
+        aug = {**TrainingService.DEFAULT_AUGMENTATION, **(augmentation_params or {})}
 
         results = model.train(
             data=data_yaml,
@@ -48,6 +75,7 @@ class TrainingService:
             exist_ok=True,
             verbose=False,
             plots=True,
+            **aug,
         )
 
         best_pt = output_dir / "train" / "weights" / "best.pt"

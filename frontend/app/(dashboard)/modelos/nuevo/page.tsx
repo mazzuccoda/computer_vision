@@ -32,10 +32,16 @@ import { DatasetEntrenamiento } from "@/types";
 
 const schema = z.object({
   nombre: z.string().min(3, "Mínimo 3 caracteres"),
-  base_model: z.enum(["yolov8n.pt", "yolov8s.pt", "yolov8m.pt"]),
+  base_model: z.enum(["yolov8n.pt", "yolov8s.pt", "yolov8m.pt", "activo"]),
   epochs: z.coerce.number().min(5).max(500),
   img_size: z.coerce.number().min(320).max(1280),
   patience: z.coerce.number().min(3).max(100),
+  // Augmentations (avanzado) — útiles para fotos aéreas de drones.
+  degrees: z.coerce.number().min(0).max(180),
+  flipud: z.coerce.number().min(0).max(1),
+  hsv_v: z.coerce.number().min(0).max(0.9),
+  mosaic: z.coerce.number().min(0).max(1),
+  mixup: z.coerce.number().min(0).max(0.5),
   notas: z.string().optional(),
 });
 
@@ -89,9 +95,15 @@ export default function NuevoModeloPage() {
       epochs: 50,
       img_size: 640,
       patience: 10,
+      degrees: 45,
+      flipud: 0.5,
+      hsv_v: 0.3,
+      mosaic: 1.0,
+      mixup: 0.1,
       notas: "",
     },
   });
+  const [mostrarAvanzado, setMostrarAvanzado] = useState(false);
 
   async function handleUpload() {
     if (!dsNombre.trim()) {
@@ -126,11 +138,13 @@ export default function NuevoModeloPage() {
       toast.error("Subí y validá un dataset primero");
       return;
     }
-    const payload = schema.parse(values);
+    const { degrees, flipud, hsv_v, mosaic, mixup, ...resto } =
+      schema.parse(values);
     try {
       const modelo = await createModelo.mutateAsync({
-        ...payload,
+        ...resto,
         dataset: dataset.id,
+        parametros_augmentation: { degrees, flipud, hsv_v, mosaic, mixup },
       });
       toast.success("Entrenamiento iniciado");
       router.push(`/modelos/${modelo.id}`);
@@ -286,10 +300,22 @@ export default function NuevoModeloPage() {
                         <option value="yolov8n.pt">
                           YOLOv8 Nano (más rápido, CPU)
                         </option>
-                        <option value="yolov8s.pt">YOLOv8 Small</option>
+                        <option value="yolov8s.pt">
+                          YOLOv8 Small (mejor recall)
+                        </option>
                         <option value="yolov8m.pt">YOLOv8 Medium</option>
+                        <option value="activo">
+                          Modelo activo actual (fine-tuning)
+                        </option>
                       </select>
                     </FormControl>
+                    {field.value === "activo" && (
+                      <p className="text-xs text-muted-foreground">
+                        Continúa el entrenamiento desde tu modelo activo
+                        (transfer learning): conserva lo aprendido y suele
+                        mejorar el recall en zonas nuevas más rápido.
+                      </p>
+                    )}
                     <FormMessage />
                   </FormItem>
                 )}
@@ -335,6 +361,105 @@ export default function NuevoModeloPage() {
                   )}
                 />
               </div>
+
+              <div className="space-y-3">
+                <button
+                  type="button"
+                  onClick={() => setMostrarAvanzado((a) => !a)}
+                  className="text-sm text-muted-foreground underline"
+                >
+                  {mostrarAvanzado
+                    ? "▲ Ocultar augmentations"
+                    : "▼ Augmentations (avanzado)"}
+                </button>
+                {mostrarAvanzado && (
+                  <div className="grid gap-4 rounded-lg border bg-muted/30 p-4 sm:grid-cols-2">
+                    <FormField
+                      control={form.control}
+                      name="degrees"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>Rotación máx. (°)</FormLabel>
+                          <p className="text-xs text-muted-foreground">
+                            45 recomendado para drones (vuelan en cualquier
+                            dirección)
+                          </p>
+                          <FormControl>
+                            <Input type="number" step="1" {...field} />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                    <FormField
+                      control={form.control}
+                      name="flipud"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>Flip vertical (0–1)</FormLabel>
+                          <p className="text-xs text-muted-foreground">
+                            0.5 = 50% de probabilidad por imagen
+                          </p>
+                          <FormControl>
+                            <Input type="number" step="0.1" {...field} />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                    <FormField
+                      control={form.control}
+                      name="hsv_v"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>Variación de brillo (0–0.9)</FormLabel>
+                          <p className="text-xs text-muted-foreground">
+                            Simula distintas horas del día y sombras
+                          </p>
+                          <FormControl>
+                            <Input type="number" step="0.05" {...field} />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                    <FormField
+                      control={form.control}
+                      name="mosaic"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>Mosaic (0–1)</FormLabel>
+                          <p className="text-xs text-muted-foreground">
+                            Combina 4 imágenes; más variedad de contexto
+                          </p>
+                          <FormControl>
+                            <Input type="number" step="0.1" {...field} />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                    <FormField
+                      control={form.control}
+                      name="mixup"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>MixUp (0–0.5)</FormLabel>
+                          <p className="text-xs text-muted-foreground">
+                            Mezcla imágenes; mejora generalización en zonas
+                            nuevas
+                          </p>
+                          <FormControl>
+                            <Input type="number" step="0.05" {...field} />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                  </div>
+                )}
+              </div>
+
               <FormField
                 control={form.control}
                 name="notas"

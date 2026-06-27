@@ -9,6 +9,44 @@ from django.utils import timezone
 logger = logging.getLogger(__name__)
 
 
+def _resolver_modelo_base(modelo) -> str:
+    """Devuelve el peso base para entrenar.
+
+    Si se eligió "activo" (fine-tuning / transfer learning), usa el ``best.pt``
+    del modelo activo actual para conservar lo ya aprendido y mejorar el recall
+    en zonas nuevas. Si no hay un activo válido, cae a ``yolov8s.pt``.
+    """
+    from apps.training.models import ModeloEntrenado
+
+    if modelo.base_model != ModeloEntrenado.ModeloBase.ACTIVO:
+        return modelo.base_model
+
+    activo = (
+        ModeloEntrenado.objects
+        .filter(
+            activo=True,
+            estado=ModeloEntrenado.Estado.COMPLETADO,
+            archivo_pesos__isnull=False,
+        )
+        .exclude(pk=modelo.pk)
+        .exclude(archivo_pesos="")
+        .first()
+    )
+    if activo and activo.archivo_pesos:
+        pesos = Path(settings.MEDIA_ROOT) / activo.archivo_pesos.name
+        if pesos.exists():
+            logger.info(
+                "Fine-tuning desde el modelo activo %s (%s)", activo.id, pesos
+            )
+            return str(pesos)
+
+    logger.warning(
+        "Se pidió fine-tuning pero no hay modelo activo válido; "
+        "usando yolov8s.pt como base."
+    )
+    return ModeloEntrenado.ModeloBase.SMALL
+
+
 def ejecutar_entrenamiento(modelo) -> dict:
     """
     Núcleo del entrenamiento (sin lógica de Celery/retry): valida el dataset,
@@ -46,13 +84,14 @@ def ejecutar_entrenamiento(modelo) -> dict:
             )
 
         result = TrainingService.entrenar(
-            base=modelo.base_model,
+            base=_resolver_modelo_base(modelo),
             data_yaml=result_ds["data_yaml_path"],
             epochs=modelo.epochs,
             imgsz=modelo.img_size,
             patience=modelo.patience,
             output_name=f"modelo_{modelo_id}_{modelo.version}",
             on_epoch_end=on_epoch_end,
+            augmentation_params=modelo.parametros_augmentation or None,
         )
 
         # Fase 3: guardar artefactos

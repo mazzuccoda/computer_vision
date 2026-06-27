@@ -11,12 +11,28 @@ TIFF_EXTENSIONS = {".tif", ".tiff"}
 
 # Debe coincidir con el tamaño de tile usado durante el ENTRENAMIENTO del
 # modelo. Si el modelo se reentrena con otro tamaño, actualizar este valor.
-TILE_SIZE_INFERENCIA = 640
-TILE_OVERLAP_INFERENCIA = 64
+# Configurables por settings/env para poder ajustar sin tocar código.
+TILE_SIZE_INFERENCIA = getattr(settings, "YOLO_TILE_SIZE", 640)
+# Mayor overlap reduce plantas perdidas en los bordes entre tiles (a costa de
+# más tiles/tiempo); el NMS entre tiles luego elimina los duplicados del borde.
+TILE_OVERLAP_INFERENCIA = getattr(settings, "YOLO_TILE_OVERLAP", 64)
+
+# IoU del NMS interno de YOLO en cada inferencia. El default de Ultralytics
+# (0.7) es permisivo y deja boxes duplicados sobre la misma planta; bajarlo los
+# elimina. Si plantas muy juntas se fusionan/pierden, subirlo.
+NMS_IOU_INFERENCIA = getattr(settings, "YOLO_IOU_INFERENCIA", 0.5)
 
 # IoU para deduplicar detecciones repetidas en las zonas de solapamiento entre
 # tiles vecinos (evita contar la misma planta 2-4 veces).
-NMS_IOU_TILES = 0.45
+NMS_IOU_TILES = getattr(settings, "YOLO_IOU_TILES", 0.45)
+
+# Test-Time Augmentation: infiere sobre variantes (flips/escala) y combina;
+# mejora el recall (menos plantas no detectadas) a costa de ~2-3x de tiempo.
+TTA_INFERENCIA = getattr(settings, "YOLO_TTA", False)
+
+# NMS agnóstico de clase: suprime solapamientos aunque sean de clases distintas
+# (útil si una misma planta se detecta como 'planta' y otra clase a la vez).
+AGNOSTIC_NMS = getattr(settings, "YOLO_AGNOSTIC_NMS", False)
 
 
 class YOLOService:
@@ -128,9 +144,21 @@ class YOLOService:
             logger.error("Error procesando imagen %s: %s", image_path, exc)
             raise
 
+    def _inferir(self, source, confidence: float):
+        """Llama al modelo con los parámetros de NMS/TTA centralizados, para que
+        la inferencia directa (JPG/PNG) y la de cada tile sean consistentes."""
+        return self.model(
+            source,
+            conf=confidence,
+            iou=NMS_IOU_INFERENCIA,
+            augment=TTA_INFERENCIA,
+            agnostic_nms=AGNOSTIC_NMS,
+        )
+
     def _detecciones_estandar(self, image_path: str, confidence: float) -> list[dict]:
-        """JPG/PNG: inferencia directa, sin cambios respecto al comportamiento original."""
-        results = self.model(image_path, conf=confidence)
+        """JPG/PNG: inferencia directa con NMS más estricto para evitar boxes
+        duplicados sobre la misma planta."""
+        results = self._inferir(image_path, confidence)
         return self._parsear_resultados(results)
 
     def _detecciones_tiff_por_tiles(self, image_path: str, confidence: float) -> list[dict]:
@@ -168,7 +196,7 @@ class YOLOService:
                 offset_x = tile_meta["pixel_x"]
                 offset_y = tile_meta["pixel_y"]
 
-                for det in self._parsear_resultados(self.model(str(tile_path), conf=confidence)):
+                for det in self._parsear_resultados(self._inferir(str(tile_path), confidence)):
                     det["x_min"] += offset_x
                     det["x_max"] += offset_x
                     det["y_min"] += offset_y

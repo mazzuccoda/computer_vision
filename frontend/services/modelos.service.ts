@@ -42,6 +42,11 @@ export const modelosService = {
     await api.post(`/modelos/${id}/activate/`);
   },
 
+  async cancel(id: number): Promise<ModeloEntrenado> {
+    const { data } = await api.post<ModeloEntrenado>(`/modelos/${id}/cancel/`);
+    return data;
+  },
+
   async remove(id: number): Promise<void> {
     await api.delete(`/modelos/${id}/`);
   },

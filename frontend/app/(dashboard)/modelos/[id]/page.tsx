@@ -1,9 +1,16 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { AlertTriangle, ArrowLeft, CheckCircle2, Download } from "lucide-react";
+import {
+  AlertTriangle,
+  ArrowLeft,
+  CheckCircle2,
+  Download,
+  Trash2,
+  XCircle,
+} from "lucide-react";
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { toast } from "sonner";
 
 import { EstadoModeloBadge } from "@/components/modelos/EstadoModeloBadge";
@@ -17,7 +24,12 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
-import { useActivateModelo, useModelo } from "@/hooks/useModelos";
+import {
+  useActivateModelo,
+  useCancelModelo,
+  useDeleteModelo,
+  useModelo,
+} from "@/hooks/useModelos";
 import { modelosService } from "@/services/modelos.service";
 
 function fmt(value?: number): string {
@@ -29,11 +41,16 @@ export default function ModeloDetallePage() {
   const params = useParams<{ id: string }>();
   const id = Number(params.id);
 
+  const router = useRouter();
   const { data: modelo, isLoading } = useModelo(id);
   const activate = useActivateModelo();
+  const cancelar = useCancelModelo();
+  const eliminar = useDeleteModelo();
 
   const enProgreso =
-    modelo?.estado === "preparando" || modelo?.estado === "entrenando";
+    modelo?.estado === "pendiente" ||
+    modelo?.estado === "preparando" ||
+    modelo?.estado === "entrenando";
 
   const { data: results } = useQuery({
     queryKey: ["modelo-results", id],
@@ -51,6 +68,27 @@ export default function ModeloDetallePage() {
       toast.success("Modelo activado — la inferencia lo usará");
     } catch {
       toast.error("No se pudo activar el modelo");
+    }
+  }
+
+  async function handleCancelar() {
+    if (!window.confirm("¿Cancelar este entrenamiento?")) return;
+    try {
+      await cancelar.mutateAsync(id);
+      toast.success("Entrenamiento cancelado");
+    } catch {
+      toast.error("No se pudo cancelar el entrenamiento");
+    }
+  }
+
+  async function handleEliminar() {
+    if (!window.confirm("¿Eliminar este modelo?")) return;
+    try {
+      await eliminar.mutateAsync(id);
+      toast.success("Modelo eliminado");
+      router.push("/modelos");
+    } catch {
+      toast.error("No se pudo eliminar (¿está activo?)");
     }
   }
 
@@ -96,23 +134,47 @@ export default function ModeloDetallePage() {
             {modelo.dataset_nombre ?? `dataset #${modelo.dataset}`}
           </p>
         </div>
-        {modelo.estado === "completado" && (
-          <div className="flex flex-wrap gap-2">
-            {!modelo.activo && (
-              <Button
-                onClick={handleActivate}
-                disabled={activate.isPending}
-              >
-                <CheckCircle2 className="mr-2 h-4 w-4" />
-                Activar modelo
+        <div className="flex flex-wrap gap-2">
+          {modelo.estado === "completado" && (
+            <>
+              {!modelo.activo && (
+                <Button
+                  onClick={handleActivate}
+                  disabled={activate.isPending}
+                >
+                  <CheckCircle2 className="mr-2 h-4 w-4" />
+                  Activar modelo
+                </Button>
+              )}
+              <Button variant="outline" onClick={handleDownload}>
+                <Download className="mr-2 h-4 w-4" />
+                Descargar .zip
               </Button>
-            )}
-            <Button variant="outline" onClick={handleDownload}>
-              <Download className="mr-2 h-4 w-4" />
-              Descargar .zip
+            </>
+          )}
+          {enProgreso && (
+            <Button
+              variant="outline"
+              className="text-amber-700 hover:text-amber-800"
+              onClick={handleCancelar}
+              disabled={cancelar.isPending}
+            >
+              <XCircle className="mr-2 h-4 w-4" />
+              Cancelar entrenamiento
             </Button>
-          </div>
-        )}
+          )}
+          {!modelo.activo && (
+            <Button
+              variant="outline"
+              className="text-red-600 hover:text-red-700"
+              onClick={handleEliminar}
+              disabled={eliminar.isPending}
+            >
+              <Trash2 className="mr-2 h-4 w-4" />
+              Eliminar
+            </Button>
+          )}
+        </div>
       </div>
 
       {enProgreso && (
@@ -128,6 +190,16 @@ export default function ModeloDetallePage() {
             </p>
           </CardContent>
         </Card>
+      )}
+
+      {modelo.estado === "cancelado" && (
+        <div className="flex gap-3 rounded-md border border-gray-200 bg-gray-50 p-4 text-sm text-gray-700">
+          <XCircle className="h-5 w-5 shrink-0" />
+          <div>
+            <p className="font-medium">Entrenamiento cancelado</p>
+            <p>{modelo.error_mensaje}</p>
+          </div>
+        </div>
       )}
 
       {modelo.estado === "error" && (

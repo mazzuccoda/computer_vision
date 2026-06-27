@@ -8,6 +8,7 @@ const ESTADO_STYLES: Record<ModeloEntrenado["estado"], string> = {
   entrenando: "bg-amber-100 text-amber-700 hover:bg-amber-100 animate-pulse",
   completado: "bg-green-100 text-green-700 hover:bg-green-100",
   error: "bg-red-100 text-red-700 hover:bg-red-100",
+  cancelado: "bg-gray-200 text-gray-600 hover:bg-gray-200",
 };
 
 const ESTADO_LABELS: Record<ModeloEntrenado["estado"], string> = {
@@ -16,6 +17,7 @@ const ESTADO_LABELS: Record<ModeloEntrenado["estado"], string> = {
   entrenando: "Entrenando",
   completado: "Completado",
   error: "Error",
+  cancelado: "Cancelado",
 };
 
 export function EstadoModeloBadge({

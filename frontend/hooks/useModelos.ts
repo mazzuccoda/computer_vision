@@ -58,6 +58,17 @@ export function useActivateModelo() {
   });
 }
 
+export function useCancelModelo() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => modelosService.cancel(id),
+    onSuccess: (_, id) => {
+      qc.invalidateQueries({ queryKey: ["modelos"] });
+      qc.invalidateQueries({ queryKey: ["modelo", id] });
+    },
+  });
+}
+
 export function useDeleteModelo() {
   const qc = useQueryClient();
   return useMutation({

@@ -41,6 +41,30 @@ const schema = z.object({
 
 type FormValues = z.input<typeof schema>;
 
+// Cloudflare corta los requests con body > 100 MB antes de llegar al backend.
+const MAX_UPLOAD_MB = 100;
+
+function mensajeErrorUpload(err: unknown, generico: string): string {
+  const res = (err as { response?: { status?: number; data?: unknown } })
+    ?.response;
+  if (res?.status === 413) {
+    return `El .zip supera el límite de ${MAX_UPLOAD_MB} MB para subir por la web. Reducí el tamaño del dataset o pedí subirlo por otra vía.`;
+  }
+  const data = res?.data;
+  if (data && typeof data === "object") {
+    const obj = data as Record<string, unknown>;
+    if (typeof obj.error === "string") return obj.error;
+    if (typeof obj.detail === "string") return obj.detail;
+    const primero = Object.values(obj)[0];
+    if (Array.isArray(primero) && typeof primero[0] === "string") {
+      return primero[0];
+    }
+    if (typeof primero === "string") return primero;
+  }
+  if (res?.status) return `${generico} (HTTP ${res.status})`;
+  return generico;
+}
+
 const FORMATOS: { value: DatasetEntrenamiento["formato"]; label: string }[] = [
   { value: "yolo", label: "YOLO Ultralytics (recomendado)" },
   { value: "cvat_xml", label: "CVAT for Images 1.1 XML (Fase 2)" },
@@ -81,6 +105,12 @@ export default function NuevoModeloPage() {
       toast.error("Seleccioná un archivo .zip");
       return;
     }
+    if (file.size > MAX_UPLOAD_MB * 1024 * 1024) {
+      toast.error(
+        `El .zip pesa ${(file.size / 1024 / 1024).toFixed(0)} MB y supera el límite de ${MAX_UPLOAD_MB} MB para subir por la web.`,
+      );
+      return;
+    }
     setProgress(0);
     try {
       const ds = await uploadDataset.mutateAsync({
@@ -95,8 +125,8 @@ export default function NuevoModeloPage() {
       } else {
         toast.success("Dataset validado");
       }
-    } catch {
-      toast.error("No se pudo subir el dataset");
+    } catch (err) {
+      toast.error(mensajeErrorUpload(err, "No se pudo subir el dataset"));
     }
   }
 
@@ -113,8 +143,8 @@ export default function NuevoModeloPage() {
       });
       toast.success("Entrenamiento iniciado");
       router.push(`/modelos/${modelo.id}`);
-    } catch {
-      toast.error("No se pudo iniciar el entrenamiento");
+    } catch (err) {
+      toast.error(mensajeErrorUpload(err, "No se pudo iniciar el entrenamiento"));
     }
   }
 
@@ -202,7 +232,7 @@ export default function NuevoModeloPage() {
             <Upload className="h-8 w-8" />
             <span>{file ? file.name : "Seleccioná el export (.zip)"}</span>
             <span className="text-xs">
-              Estructura YOLO: images/, labels/, classes.txt
+              Estructura YOLO: images/, labels/, classes.txt · máx. {MAX_UPLOAD_MB} MB
             </span>
           </button>
 

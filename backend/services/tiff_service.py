@@ -32,6 +32,10 @@ MEDIA_ROOT = Path(settings.MEDIA_ROOT)
 # Configurables por settings/env para poder subir la nitidez al hacer zoom.
 PREVIEW_MAX_DIM = getattr(settings, "ORTOFOTO_PREVIEW_MAX_DIM", 4096)
 PREVIEW_JPG_QUALITY = getattr(settings, "ORTOFOTO_PREVIEW_JPG_QUALITY", 90)
+# Lado máximo (px) del JPG anotado generado para el visor/editor. Las ortofotos
+# son gigapíxel y OpenCV/PIL no pueden abrirlas enteras (CV_IO_MAX_IMAGE_PIXELS /
+# DecompressionBomb); se lee una versión decimada a este lado máximo.
+ANNOTATED_MAX_DIM = getattr(settings, "ANNOTATED_MAX_DIM", PREVIEW_MAX_DIM)
 
 # Web Mercator (EPSG:3857): CRS de los tiles XYZ (estándar slippy map / Leaflet).
 WEB_MERCATOR = CRS.from_epsg(3857)
@@ -244,6 +248,44 @@ class TiffService:
             "ancho": out_w,
             "alto": out_h,
         }
+
+    @staticmethod
+    def leer_rgb_decimado(
+        tiff_path: str, max_dim: int = ANNOTATED_MAX_DIM
+    ) -> tuple[np.ndarray, float] | None:
+        """Lee un GeoTIFF (posiblemente gigapíxel) como RGB uint8 submuestreado.
+
+        OpenCV/PIL no pueden abrir ortofotos de varios gigapíxeles
+        (``CV_IO_MAX_IMAGE_PIXELS`` / ``DecompressionBomb``). rasterio lee una
+        versión decimada con ``out_shape`` sin cargar el raster entero.
+
+        Conserva la grilla nativa del raster (sin reproyectar), por lo que las
+        coordenadas de detección en píxeles nativos sólo hay que multiplicarlas
+        por la escala devuelta.
+
+        Returns:
+            (rgb HxWx3 uint8, escala) donde ``escala = out/native`` (≤ 1.0),
+            o None si no se pudo leer.
+        """
+        try:
+            with rasterio.open(tiff_path) as src:
+                lado = max(src.width, src.height)
+                escala = min(1.0, max_dim / lado) if lado else 1.0
+                out_w = max(1, int(round(src.width * escala)))
+                out_h = max(1, int(round(src.height * escala)))
+                bandas = min(src.count, 3)
+                data = src.read(
+                    indexes=list(range(1, bandas + 1)),
+                    out_shape=(bandas, out_h, out_w),
+                    resampling=Resampling.bilinear,
+                )
+            rgb = TiffService._bandas_a_rgb(data, bandas, preview=True)
+            if rgb is None:
+                return None
+            return rgb, escala
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"No se pudo leer RGB decimado del TIFF: {e}")
+            return None
 
     # ------------------------------------------------------------------
     # Tiles XYZ on-demand (slippy map) — nitidez nativa al hacer zoom.

@@ -26,6 +26,14 @@ NMS_IOU_INFERENCIA = getattr(settings, "YOLO_IOU_INFERENCIA", 0.5)
 # tiles vecinos (evita contar la misma planta 2-4 veces).
 NMS_IOU_TILES = getattr(settings, "YOLO_IOU_TILES", 0.45)
 
+# Intersección sobre el área del box MÁS CHICO (IoS). El NMS por IoU no elimina
+# un box contenido dentro de otro más grande (su IoU = inter/union es bajo por
+# la diferencia de tamaño), así que la misma planta queda con un box grande y
+# otros chicos anidados. Si un box queda mayormente dentro de otro de más
+# confianza (IoS >= umbral) se suprime. Poner 0 para desactivar; bajarlo es más
+# agresivo (puede fusionar plantas muy juntas).
+NMS_IOS_DEDUP = getattr(settings, "YOLO_IOS_DEDUP", 0.6)
+
 # Test-Time Augmentation: infiere sobre variantes (flips/escala) y combina;
 # mejora el recall (menos plantas no detectadas) a costa de ~2-3x de tiempo.
 TTA_INFERENCIA = getattr(settings, "YOLO_TTA", False)
@@ -157,9 +165,15 @@ class YOLOService:
 
     def _detecciones_estandar(self, image_path: str, confidence: float) -> list[dict]:
         """JPG/PNG: inferencia directa con NMS más estricto para evitar boxes
-        duplicados sobre la misma planta."""
+        duplicados sobre la misma planta.
+
+        Además del NMS interno de YOLO (por IoU) se aplica una pasada propia que
+        también suprime boxes anidados (por IoS), que el IoU no elimina.
+        """
         results = self._inferir(image_path, confidence)
-        return self._parsear_resultados(results)
+        return self._nms(
+            self._parsear_resultados(results), NMS_IOU_TILES, NMS_IOS_DEDUP
+        )
 
     def _detecciones_tiff_por_tiles(self, image_path: str, confidence: float) -> list[dict]:
         """Trocea el TIFF, infiere en cada tile y combina las detecciones sumando
@@ -203,7 +217,9 @@ class YOLOService:
                     det["y_max"] += offset_y
                     todas_detecciones.append(det)
 
-        deduplicadas = self._nms(todas_detecciones, NMS_IOU_TILES)
+        deduplicadas = self._nms(
+            todas_detecciones, NMS_IOU_TILES, NMS_IOS_DEDUP
+        )
         logger.info(
             "TIFF procesado por tiles: %s tiles, %s detecciones (%s tras "
             "deduplicar solapamientos) en %s",
@@ -215,34 +231,56 @@ class YOLOService:
         return deduplicadas
 
     @staticmethod
-    def _nms(detecciones: list[dict], iou_threshold: float) -> list[dict]:
-        """Non-Max Suppression por clase para fusionar detecciones duplicadas en
-        las zonas de solapamiento entre tiles. Conserva la de mayor confianza."""
+    def _nms(
+        detecciones: list[dict],
+        iou_threshold: float,
+        ios_threshold: float = 0.0,
+    ) -> list[dict]:
+        """Non-Max Suppression por clase para fusionar detecciones duplicadas.
+
+        Suprime un box (de menor confianza) si contra alguno ya conservado de la
+        misma clase: su IoU >= ``iou_threshold`` (solapamiento clásico entre
+        tiles) O su IoS >= ``ios_threshold`` (queda mayormente contenido en el
+        otro, p. ej. boxes anidados sobre la misma planta). Conserva el de mayor
+        confianza.
+        """
         if not detecciones:
             return []
 
+        def _inter(a: dict, b: dict) -> float:
+            iw = max(0.0, min(a["x_max"], b["x_max"]) - max(a["x_min"], b["x_min"]))
+            ih = max(0.0, min(a["y_max"], b["y_max"]) - max(a["y_min"], b["y_min"]))
+            return iw * ih
+
+        def _area(d: dict) -> float:
+            return (d["x_max"] - d["x_min"]) * (d["y_max"] - d["y_min"])
+
         def iou(a: dict, b: dict) -> float:
-            ix1 = max(a["x_min"], b["x_min"])
-            iy1 = max(a["y_min"], b["y_min"])
-            ix2 = min(a["x_max"], b["x_max"])
-            iy2 = min(a["y_max"], b["y_max"])
-            iw = max(0.0, ix2 - ix1)
-            ih = max(0.0, iy2 - iy1)
-            inter = iw * ih
+            inter = _inter(a, b)
             if inter <= 0:
                 return 0.0
-            area_a = (a["x_max"] - a["x_min"]) * (a["y_max"] - a["y_min"])
-            area_b = (b["x_max"] - b["x_min"]) * (b["y_max"] - b["y_min"])
-            union = area_a + area_b - inter
+            union = _area(a) + _area(b) - inter
             return inter / union if union > 0 else 0.0
+
+        def ios(a: dict, b: dict) -> float:
+            inter = _inter(a, b)
+            if inter <= 0:
+                return 0.0
+            menor = min(_area(a), _area(b))
+            return inter / menor if menor > 0 else 0.0
 
         ordenadas = sorted(detecciones, key=lambda d: d["confianza"], reverse=True)
         conservadas: list[dict] = []
         for det in ordenadas:
-            if all(
-                det["clase"] != keep["clase"] or iou(det, keep) < iou_threshold
+            duplicado = any(
+                det["clase"] == keep["clase"]
+                and (
+                    iou(det, keep) >= iou_threshold
+                    or (ios_threshold > 0 and ios(det, keep) >= ios_threshold)
+                )
                 for keep in conservadas
-            ):
+            )
+            if not duplicado:
                 conservadas.append(det)
         return conservadas
 

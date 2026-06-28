@@ -97,6 +97,16 @@ export const vuelosService = {
     return data;
   },
 
+  async deduplicar(
+    id: number,
+  ): Promise<{ eliminadas: number; total_plantas: number }> {
+    const { data } = await api.post<{
+      eliminadas: number;
+      total_plantas: number;
+    }>(`/vuelos/${id}/deduplicar/`);
+    return data;
+  },
+
   async results(id: number): Promise<VueloResults> {
     const { data } = await api.get<VueloResults>(`/vuelos/${id}/results/`);
     return data;

@@ -2,6 +2,7 @@
 
 import {
   ArrowLeft,
+  CopyMinus,
   Download,
   Map,
   Play,
@@ -35,6 +36,7 @@ import { ProcessingStatus } from "@/components/vuelos/ProcessingStatus";
 import VisorDetecciones from "@/components/vuelos/VisorDetecciones";
 import {
   useCancelVuelo,
+  useDeduplicarVuelo,
   useDeleteVuelo,
   useProcessVuelo,
   useVuelo,
@@ -53,6 +55,7 @@ export default function VueloDetallePage() {
   const { data: imagenes } = useVueloImagenes(id, vuelo?.estado);
   const processVuelo = useProcessVuelo();
   const cancelVuelo = useCancelVuelo();
+  const deduplicarVuelo = useDeduplicarVuelo();
   const deleteVuelo = useDeleteVuelo();
 
   if (isLoading) return <LoadingSpinner />;
@@ -96,6 +99,26 @@ export default function VueloDetallePage() {
       toast.success("Procesamiento cancelado");
     } catch {
       toast.error("No se pudo cancelar el procesamiento");
+    }
+  }
+
+  async function handleDeduplicar() {
+    if (
+      !window.confirm(
+        "Quita detecciones duplicadas exactas (la misma planta marcada más " +
+          "de una vez por un procesamiento repetido). No reinfiere el vuelo. " +
+          "¿Continuar?",
+      )
+    )
+      return;
+    try {
+      const r = await deduplicarVuelo.mutateAsync(id);
+      toast.success(
+        `${r.eliminadas.toLocaleString()} duplicados eliminados · ` +
+          `${r.total_plantas.toLocaleString()} plantas`,
+      );
+    } catch {
+      toast.error("No se pudieron quitar los duplicados");
     }
   }
 
@@ -191,14 +214,24 @@ export default function VueloDetallePage() {
           )}
           {vuelo.estado !== "procesando" &&
             vuelo.imagenes_procesadas > 0 && (
-              <Button
-                variant="outline"
-                onClick={handleReprocess}
-                disabled={processVuelo.isPending}
-              >
-                <RotateCcw className="mr-2 h-4 w-4" />
-                Reprocesar con modelo activo
-              </Button>
+              <>
+                <Button
+                  variant="outline"
+                  onClick={handleReprocess}
+                  disabled={processVuelo.isPending}
+                >
+                  <RotateCcw className="mr-2 h-4 w-4" />
+                  Reprocesar con modelo activo
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={handleDeduplicar}
+                  disabled={deduplicarVuelo.isPending}
+                >
+                  <CopyMinus className="mr-2 h-4 w-4" />
+                  Quitar duplicados
+                </Button>
+              </>
             )}
           <Button
             variant="outline"

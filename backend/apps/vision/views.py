@@ -6,7 +6,8 @@ from pathlib import Path
 
 from django.conf import settings
 from django.core.files import File
-from django.db.models import Q
+from django.db import transaction
+from django.db.models import Q, Sum
 from django.http import HttpResponse
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
@@ -234,20 +235,35 @@ class VueloViewSet(viewsets.ModelViewSet):
             "yes",
             "on",
         )
-        if reprocesar:
-            Deteccion.objects.filter(imagen__vuelo=vuelo).delete()
-            vuelo.imagenes.update(procesada=False, conteo_plantas=0)
-            vuelo.total_plantas = 0
 
-        # Reset progress counters before (re)processing.
-        vuelo.estado = Vuelo.Estado.PENDIENTE
-        vuelo.imagenes_procesadas = vuelo.imagenes.filter(procesada=True).count()
-        vuelo.tiles_total = None
-        vuelo.tiles_procesados = None
-        vuelo.save(update_fields=[
-            "estado", "imagenes_procesadas", "total_plantas",
-            "tiles_total", "tiles_procesados",
-        ])
+        # Bloqueo contra doble disparo: si se pulsa "Procesar"/"Reprocesar" dos
+        # veces (o el front reintenta), se llegaban a encolar 2 tareas que
+        # inferían en paralelo y guardaban CADA detección 2 veces (el conteo del
+        # vuelo quedaba a la mitad del total real en el mapa). Marcamos el vuelo
+        # como PROCESANDO dentro de una fila bloqueada y rechazamos si ya lo
+        # estaba: así el segundo request no encola nada.
+        with transaction.atomic():
+            vuelo = Vuelo.objects.select_for_update().get(pk=vuelo.pk)
+            if vuelo.estado == Vuelo.Estado.PROCESANDO:
+                return Response(
+                    {"detail": "El vuelo ya se está procesando."},
+                    status=status.HTTP_409_CONFLICT,
+                )
+            if reprocesar:
+                Deteccion.objects.filter(imagen__vuelo=vuelo).delete()
+                vuelo.imagenes.update(procesada=False, conteo_plantas=0)
+                vuelo.total_plantas = 0
+
+            vuelo.estado = Vuelo.Estado.PROCESANDO
+            vuelo.imagenes_procesadas = vuelo.imagenes.filter(
+                procesada=True
+            ).count()
+            vuelo.tiles_total = None
+            vuelo.tiles_procesados = None
+            vuelo.save(update_fields=[
+                "estado", "imagenes_procesadas", "total_plantas",
+                "tiles_total", "tiles_procesados",
+            ])
 
         async_result = process_vuelo_task.delay(vuelo.id)
         vuelo.celery_task_id = async_result.id
@@ -255,6 +271,60 @@ class VueloViewSet(viewsets.ModelViewSet):
         return Response(
             {"detail": "Procesamiento iniciado.", "vuelo_id": vuelo.id},
             status=status.HTTP_202_ACCEPTED,
+        )
+
+    @action(detail=True, methods=["post"], url_path="deduplicar")
+    def deduplicar(self, request, pk=None):
+        """Elimina detecciones duplicadas EXACTAS del vuelo (misma imagen y
+        mismo bounding box), dejando una sola copia. Sirve para limpiar vuelos
+        que quedaron con detecciones repetidas por un doble procesamiento
+        anterior, sin tener que reinferir el TIFF. Recalcula los conteos."""
+        vuelo = self.get_object()
+        if vuelo.estado == Vuelo.Estado.PROCESANDO:
+            return Response(
+                {"detail": "El vuelo se está procesando; esperá a que termine."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        vistos: set[tuple] = set()
+        a_borrar: list[int] = []
+        filas = (
+            Deteccion.objects.filter(imagen__vuelo=vuelo)
+            .order_by("id")
+            .values("id", "imagen_id", "x_min", "y_min", "x_max", "y_max")
+            .iterator(chunk_size=5000)
+        )
+        for d in filas:
+            clave = (
+                d["imagen_id"],
+                round(d["x_min"], 2),
+                round(d["y_min"], 2),
+                round(d["x_max"], 2),
+                round(d["y_max"], 2),
+            )
+            if clave in vistos:
+                a_borrar.append(d["id"])
+            else:
+                vistos.add(clave)
+
+        eliminadas = 0
+        for i in range(0, len(a_borrar), 5000):
+            chunk = a_borrar[i:i + 5000]
+            eliminadas += Deteccion.objects.filter(id__in=chunk).delete()[0]
+
+        for imagen in vuelo.imagenes.all():
+            imagen.conteo_plantas = imagen.detecciones.count()
+            imagen.save(update_fields=["conteo_plantas"])
+        vuelo.total_plantas = (
+            vuelo.imagenes.aggregate(total=Sum("conteo_plantas"))["total"] or 0
+        )
+        vuelo.save(update_fields=["total_plantas"])
+
+        return Response(
+            {
+                "eliminadas": eliminadas,
+                "total_plantas": vuelo.total_plantas,
+            }
         )
 
     @action(detail=True, methods=["post"], url_path="cancel")

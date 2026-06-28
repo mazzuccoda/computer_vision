@@ -74,6 +74,18 @@ export function useCancelVuelo() {
   });
 }
 
+export function useDeduplicarVuelo() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => vuelosService.deduplicar(id),
+    onSuccess: (_, id) => {
+      qc.invalidateQueries({ queryKey: ["vuelo", id] });
+      qc.invalidateQueries({ queryKey: ["vuelo-imagenes", id] });
+      qc.invalidateQueries({ queryKey: ["vuelos"] });
+    },
+  });
+}
+
 export function useUploadImages() {
   const qc = useQueryClient();
   return useMutation({

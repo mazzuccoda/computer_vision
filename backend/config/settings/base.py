@@ -135,6 +135,10 @@ MODELS_PATH = config("MODELS_PATH", default=str(BASE_DIR / "models"))
 # --------------------------------------------------------------------------
 # Ajustes de inferencia YOLO (tuneables sin reentrenar ni redeployar código)
 # --------------------------------------------------------------------------
+# Confianza mínima de detección: descarta detecciones por debajo de este valor.
+# Subirlo (p. ej. 0.6) deja sólo detecciones firmes → menos cajas dudosas
+# duplicadas; bajarlo sube el recall (más plantas, más falsos positivos).
+YOLO_CONFIDENCE = config("YOLO_CONFIDENCE", default=0.5, cast=float)
 # IoU del NMS interno de YOLO por inferencia (default Ultralytics = 0.7). Más
 # bajo elimina boxes duplicados sobre la misma planta; subir si plantas muy
 # juntas se fusionan/pierden. Rango útil ~0.3–0.6.

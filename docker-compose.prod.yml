@@ -23,6 +23,7 @@ x-backend-env: &backend-env
   MODELS_PATH: ${MODELS_PATH:-/app/models}
 
   # Ajuste de detección (NMS) sin reconstruir imagen: editar en el .env del server.
+  YOLO_CONFIDENCE: ${YOLO_CONFIDENCE:-0.5}
   YOLO_IOU_INFERENCIA: ${YOLO_IOU_INFERENCIA:-0.5}
   YOLO_IOU_TILES: ${YOLO_IOU_TILES:-0.45}
   YOLO_IOS_DEDUP: ${YOLO_IOS_DEDUP:-0.6}

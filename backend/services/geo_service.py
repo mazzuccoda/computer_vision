@@ -141,6 +141,59 @@ class GeoService:
         return proyectar
 
     @staticmethod
+    def proyectar_pixeles_desde_tiff(
+        tiff_path: str,
+        xs: list[float],
+        ys: list[float],
+    ) -> tuple[list[float] | None, list[float] | None]:
+        """
+        Proyecta arrays de coordenadas píxel→(lon, lat) WGS84 en UNA sola
+        llamada (vectorizado). Mucho más rápido que ``referencer_desde_tiff``
+        punto a punto (que hace un ``warp_transform`` por punto): para decenas
+        de miles de detecciones baja de ~1 min a ~1 s.
+
+        Returns:
+            (lons, lats) en EPSG:4326, o (None, None) si el TIFF no está
+            georreferenciado o no se pudo abrir.
+        """
+        import rasterio
+        from rasterio.crs import CRS
+        from rasterio.warp import transform as warp_transform
+
+        if not xs:
+            return [], []
+        try:
+            with rasterio.open(tiff_path) as src:
+                if not src.crs:
+                    return None, None
+                transform = src.transform
+                src_crs = src.crs
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                f"No se pudo abrir TIFF para proyección vectorizada: {e}"
+            )
+            return None, None
+
+        a, b, c, d, e_, f = (
+            transform.a,
+            transform.b,
+            transform.c,
+            transform.d,
+            transform.e,
+            transform.f,
+        )
+        xs_crs = [a * x + b * y + c for x, y in zip(xs, ys)]
+        ys_crs = [d * x + e_ * y + f for x, y in zip(xs, ys)]
+        try:
+            lons, lats = warp_transform(
+                src_crs, CRS.from_epsg(4326), xs_crs, ys_crs
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"Error en proyección vectorizada píxel→geo: {e}")
+            return None, None
+        return list(lons), list(lats)
+
+    @staticmethod
     def referencer_inverso_desde_tiff(tiff_path: str):
         """
         Construye un proyector WGS84→píxel: el inverso de

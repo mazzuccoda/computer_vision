@@ -277,15 +277,18 @@ export default function MapaDetecciones({ vueloId }: Props) {
   const [guardando, setGuardando] = useState(false);
   const controllerRef = useRef<EditorController | null>(null);
 
+  // Se piden TODAS las detecciones una sola vez (min_confidence=0) y el slider
+  // de umbral filtra del lado del cliente. Antes la query incluía minConfianza
+  // en la key, así que cada movimiento del slider re-pedía el endpoint (que
+  // sobre la ortofoto gigapíxel tarda decenas de segundos) y la pantalla se
+  // colgaba.
   const { data, isLoading } = useQuery<
     GeoFeatureCollection<DeteccionMapaProps>
   >({
-    queryKey: ["detecciones-mapa", vueloId, minConfianza],
+    queryKey: ["detecciones-mapa", vueloId],
     queryFn: () =>
       api
-        .get(
-          `/vuelos/${vueloId}/detecciones-mapa/?min_confidence=${minConfianza}`
-        )
+        .get(`/vuelos/${vueloId}/detecciones-mapa/?min_confidence=0`)
         .then((r) => r.data),
   });
 
@@ -295,7 +298,9 @@ export default function MapaDetecciones({ vueloId }: Props) {
       api.get(`/vuelos/${vueloId}/raster-overlay/`).then((r) => r.data),
   });
 
-  const features = data?.features ?? [];
+  const features = (data?.features ?? []).filter(
+    (f) => f.properties.confianza >= minConfianza
+  );
   const overlays = overlayData?.overlays ?? [];
   const hayOrto = overlays.length > 0;
 

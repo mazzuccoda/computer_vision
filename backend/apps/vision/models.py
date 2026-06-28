@@ -59,6 +59,10 @@ class Vuelo(models.Model):
     total_plantas = models.IntegerField(default=0)
     total_imagenes = models.IntegerField(default=0)
     imagenes_procesadas = models.IntegerField(default=0)
+    # Progreso fino dentro de una imagen gigapíxel (TIFF) que se infiere por
+    # tiles: la barra por imagen quedaría en 0% durante horas. Nulos = no aplica.
+    tiles_total = models.IntegerField(null=True, blank=True)
+    tiles_procesados = models.IntegerField(null=True, blank=True)
     ubicacion = gis_models.PointField(
         null=True,
         blank=True,

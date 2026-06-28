@@ -31,6 +31,8 @@ export interface Vuelo {
   total_imagenes: number;
   imagenes_procesadas: number;
   porcentaje_procesado: number;
+  tiles_total?: number | null;
+  tiles_procesados?: number | null;
   creado_en: string;
   actualizado_en?: string;
 }

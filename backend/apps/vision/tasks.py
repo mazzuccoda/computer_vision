@@ -195,8 +195,17 @@ def process_vuelo_task(self, vuelo_id: int) -> dict:
         imagenes = vuelo.imagenes.filter(procesada=False)
         total_plantas = 0
 
+        def _progreso_tiles(procesados, total):
+            # Progreso fino para TIFF gigapíxel (se infiere por tiles); la barra
+            # por imagen quedaría en 0% durante horas.
+            Vuelo.objects.filter(id=vuelo.id).update(
+                tiles_procesados=procesados, tiles_total=total
+            )
+
         for imagen in imagenes:
-            resultado = yolo.process_image_with_yolo(imagen.archivo.path)
+            resultado = yolo.process_image_with_yolo(
+                imagen.archivo.path, progress_callback=_progreso_tiles
+            )
 
             with transaction.atomic():
                 _crear_detecciones_con_geo(imagen, resultado["detecciones"])
@@ -207,7 +216,11 @@ def process_vuelo_task(self, vuelo_id: int) -> dict:
 
                 total_plantas += resultado["total_detecciones"]
                 vuelo.imagenes_procesadas += 1
-                vuelo.save(update_fields=["imagenes_procesadas"])
+                vuelo.tiles_total = None
+                vuelo.tiles_procesados = None
+                vuelo.save(update_fields=[
+                    "imagenes_procesadas", "tiles_total", "tiles_procesados"
+                ])
 
         _georreferenciar_detecciones_existentes(vuelo)
         _intentar_georreferenciar_vuelo(vuelo)

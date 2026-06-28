@@ -1,7 +1,7 @@
 import logging
-import tempfile
 from pathlib import Path
 
+import numpy as np
 from django.conf import settings
 from ultralytics import YOLO
 
@@ -123,21 +123,29 @@ class YOLOService:
         self._active_model_id = None
         return self.model
 
-    def process_image_with_yolo(self, image_path: str, confidence: float = 0.5) -> dict:
+    def process_image_with_yolo(
+        self,
+        image_path: str,
+        confidence: float = 0.5,
+        progress_callback=None,
+    ) -> dict:
         """Procesa una imagen y retorna detecciones.
 
         JPG/PNG: inferencia directa (comportamiento sin cambios).
 
-        TIFF: SIEMPRE se trocea primero en tiles de TILE_SIZE_INFERENCIA con
-        TiffService (el mismo servicio del módulo Convertir TIFF) y se infiere
-        tile por tile. Esto reproduce el tamaño relativo de planta visto durante
-        el entrenamiento; sin trocear, YOLO reescala el TIFF completo y las
-        plantas quedan en 2-3 píxeles (0 detecciones).
+        TIFF: se recorre por ventanas (rasterio) e se infiere tile por tile en
+        STREAMING, sin volcar miles de JPG a disco. Esto reproduce el tamaño
+        relativo de planta visto durante el entrenamiento; sin trocear, YOLO
+        reescala el TIFF completo y las plantas quedan en 2-3 píxeles (0
+        detecciones). ``progress_callback(procesados, total)`` se invoca durante
+        el recorrido del TIFF para reportar avance por tile.
         """
         ext = Path(image_path).suffix.lower()
         try:
             if ext in TIFF_EXTENSIONS:
-                detecciones = self._detecciones_tiff_por_tiles(image_path, confidence)
+                detecciones = self._detecciones_tiff_por_tiles(
+                    image_path, confidence, progress_callback
+                )
             else:
                 detecciones = self._detecciones_estandar(image_path, confidence)
 
@@ -175,56 +183,74 @@ class YOLOService:
             self._parsear_resultados(results), NMS_IOU_TILES, NMS_IOS_DEDUP
         )
 
-    def _detecciones_tiff_por_tiles(self, image_path: str, confidence: float) -> list[dict]:
-        """Trocea el TIFF, infiere en cada tile y combina las detecciones sumando
-        el offset de píxel de cada tile para devolver coordenadas en el sistema
-        de la imagen TIFF original."""
+    def _detecciones_tiff_por_tiles(
+        self,
+        image_path: str,
+        confidence: float,
+        progress_callback=None,
+    ) -> list[dict]:
+        """Infiere un GeoTIFF gigapíxel en STREAMING.
+
+        Recorre el TIFF por ventanas (sin escribir tiles a disco), infiere cada
+        tile y deduplica las detecciones contra sus vecinas con una grilla
+        espacial (IoU + IoS) en O(n): así no se cuelga con decenas de miles de
+        cajas (el NMS global era O(n²)) y se eliminan los duplicados de los
+        bordes entre tiles y los boxes anidados sobre la misma planta.
+        """
         from services.tiff_service import TiffService
 
-        todas_detecciones: list[dict] = []
+        logger.info(
+            "Inferencia TIFF en streaming (tile_size=%s, overlap=%s): %s",
+            TILE_SIZE_INFERENCIA,
+            TILE_OVERLAP_INFERENCIA,
+            image_path,
+        )
 
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            tmp_path = Path(tmp_dir)
+        dedup = _GrillaDedup(
+            NMS_IOU_TILES, NMS_IOS_DEDUP, celda=TILE_SIZE_INFERENCIA
+        )
+        tiles_con_datos = 0
+        crudas = 0
+        ultimo_reporte = 0
 
-            logger.info(
-                "Troceando TIFF para inferencia (tile_size=%s, overlap=%s): %s",
-                TILE_SIZE_INFERENCIA,
-                TILE_OVERLAP_INFERENCIA,
+        for indice, total, off_x, off_y, img_rgb in (
+            TiffService.iter_tiles_para_inferencia(
                 image_path,
-            )
-
-            resultado_tiles = TiffService.generar_tiles(
-                tiff_path=image_path,
-                output_dir=tmp_path,
                 tile_size=TILE_SIZE_INFERENCIA,
                 overlap_px=TILE_OVERLAP_INFERENCIA,
-                calidad_jpg=95,
                 saltar_vacios=True,
             )
+        ):
+            if img_rgb is not None:
+                tiles_con_datos += 1
+                # Ultralytics interpreta los ndarray como BGR (igual que cv2 al
+                # leer un archivo), así que pasamos BGR para igualar el camino
+                # basado en JPG y no alterar las detecciones.
+                tile_bgr = np.ascontiguousarray(img_rgb[:, :, ::-1])
+                for det in self._parsear_resultados(
+                    self._inferir(tile_bgr, confidence)
+                ):
+                    det["x_min"] += off_x
+                    det["x_max"] += off_x
+                    det["y_min"] += off_y
+                    det["y_max"] += off_y
+                    crudas += 1
+                    dedup.add(det)
 
-            tiles_meta = resultado_tiles["metadatos_geo"]["tiles"]
-            logger.info("TIFF troceado en %s tiles. Infiriendo...", len(tiles_meta))
+            # Reportar progreso cada ~1% (o cada 25 tiles) para no saturar la BD.
+            if progress_callback and (
+                indice - ultimo_reporte >= max(25, total // 100)
+                or indice == total
+            ):
+                ultimo_reporte = indice
+                progress_callback(indice, total)
 
-            for tile_meta in tiles_meta:
-                tile_path = tmp_path / tile_meta["nombre"]
-                offset_x = tile_meta["pixel_x"]
-                offset_y = tile_meta["pixel_y"]
-
-                for det in self._parsear_resultados(self._inferir(str(tile_path), confidence)):
-                    det["x_min"] += offset_x
-                    det["x_max"] += offset_x
-                    det["y_min"] += offset_y
-                    det["y_max"] += offset_y
-                    todas_detecciones.append(det)
-
-        deduplicadas = self._nms(
-            todas_detecciones, NMS_IOU_TILES, NMS_IOS_DEDUP
-        )
+        deduplicadas = dedup.resultado()
         logger.info(
-            "TIFF procesado por tiles: %s tiles, %s detecciones (%s tras "
-            "deduplicar solapamientos) en %s",
-            len(tiles_meta),
-            len(todas_detecciones),
+            "TIFF procesado en streaming: %s tiles con datos, %s detecciones "
+            "(%s tras deduplicar) en %s",
+            tiles_con_datos,
+            crudas,
             len(deduplicadas),
             image_path,
         )
@@ -247,37 +273,11 @@ class YOLOService:
         if not detecciones:
             return []
 
-        def _inter(a: dict, b: dict) -> float:
-            iw = max(0.0, min(a["x_max"], b["x_max"]) - max(a["x_min"], b["x_min"]))
-            ih = max(0.0, min(a["y_max"], b["y_max"]) - max(a["y_min"], b["y_min"]))
-            return iw * ih
-
-        def _area(d: dict) -> float:
-            return (d["x_max"] - d["x_min"]) * (d["y_max"] - d["y_min"])
-
-        def iou(a: dict, b: dict) -> float:
-            inter = _inter(a, b)
-            if inter <= 0:
-                return 0.0
-            union = _area(a) + _area(b) - inter
-            return inter / union if union > 0 else 0.0
-
-        def ios(a: dict, b: dict) -> float:
-            inter = _inter(a, b)
-            if inter <= 0:
-                return 0.0
-            menor = min(_area(a), _area(b))
-            return inter / menor if menor > 0 else 0.0
-
         ordenadas = sorted(detecciones, key=lambda d: d["confianza"], reverse=True)
         conservadas: list[dict] = []
         for det in ordenadas:
             duplicado = any(
-                det["clase"] == keep["clase"]
-                and (
-                    iou(det, keep) >= iou_threshold
-                    or (ios_threshold > 0 and ios(det, keep) >= ios_threshold)
-                )
+                _es_duplicado(det, keep, iou_threshold, ios_threshold)
                 for keep in conservadas
             )
             if not duplicado:
@@ -301,3 +301,90 @@ class YOLOService:
                     }
                 )
         return detecciones
+
+
+def _area(d: dict) -> float:
+    return (d["x_max"] - d["x_min"]) * (d["y_max"] - d["y_min"])
+
+
+def _interseccion(a: dict, b: dict) -> float:
+    iw = max(0.0, min(a["x_max"], b["x_max"]) - max(a["x_min"], b["x_min"]))
+    ih = max(0.0, min(a["y_max"], b["y_max"]) - max(a["y_min"], b["y_min"]))
+    return iw * ih
+
+
+def _es_duplicado(
+    a: dict, b: dict, iou_threshold: float, ios_threshold: float
+) -> bool:
+    """True si ``a`` y ``b`` (misma clase) son la misma detección: por IoU
+    (solapamiento clásico) o por IoS (uno contenido en el otro)."""
+    if a["clase"] != b["clase"]:
+        return False
+    inter = _interseccion(a, b)
+    if inter <= 0:
+        return False
+    union = _area(a) + _area(b) - inter
+    if union > 0 and inter / union >= iou_threshold:
+        return True
+    if ios_threshold > 0:
+        menor = min(_area(a), _area(b))
+        if menor > 0 and inter / menor >= ios_threshold:
+            return True
+    return False
+
+
+class _GrillaDedup:
+    """Deduplicación espacial incremental para inferencia en streaming.
+
+    Mantiene las detecciones conservadas indexadas en una grilla de celdas de
+    lado ``celda`` px. Al agregar una detección sólo se compara contra las que
+    caen en su celda y las vecinas (donde puede haber un duplicado de un tile
+    contiguo), por lo que el costo es O(n) en vez del O(n²) del NMS global.
+    Conserva siempre la de mayor confianza.
+    """
+
+    def __init__(self, iou_threshold: float, ios_threshold: float, celda: int):
+        self.iou_threshold = iou_threshold
+        self.ios_threshold = ios_threshold
+        self.celda = max(1, int(celda))
+        self._grilla: dict[tuple[int, int], list[int]] = {}
+        self._dets: list[dict | None] = []
+
+    def _celdas(self, det: dict):
+        cx0 = int(det["x_min"] // self.celda)
+        cx1 = int(det["x_max"] // self.celda)
+        cy0 = int(det["y_min"] // self.celda)
+        cy1 = int(det["y_max"] // self.celda)
+        for cx in range(cx0, cx1 + 1):
+            for cy in range(cy0, cy1 + 1):
+                yield (cx, cy)
+
+    def add(self, det: dict) -> None:
+        candidatos: set[int] = set()
+        for celda in self._celdas(det):
+            candidatos.update(self._grilla.get(celda, ()))
+
+        solapados: list[int] = []
+        for i in candidatos:
+            keep = self._dets[i]
+            if keep is None:
+                continue
+            if _es_duplicado(
+                det, keep, self.iou_threshold, self.ios_threshold
+            ):
+                # Si ya hay una igual o mejor, descartamos la nueva.
+                if keep["confianza"] >= det["confianza"]:
+                    return
+                solapados.append(i)
+
+        # La nueva es mejor que las solapadas: las quitamos.
+        for i in solapados:
+            self._dets[i] = None
+
+        idx = len(self._dets)
+        self._dets.append(det)
+        for celda in self._celdas(det):
+            self._grilla.setdefault(celda, []).append(idx)
+
+    def resultado(self) -> list[dict]:
+        return [d for d in self._dets if d is not None]

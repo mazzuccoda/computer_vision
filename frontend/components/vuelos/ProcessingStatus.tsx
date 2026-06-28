@@ -5,6 +5,14 @@ import { Progress } from "@/components/ui/progress";
 import { Vuelo } from "@/types";
 
 export function ProcessingStatus({ vuelo }: { vuelo: Vuelo }) {
+  const tilesTotal = vuelo.tiles_total ?? 0;
+  const tilesHechos = vuelo.tiles_procesados ?? 0;
+  const mostrarTiles =
+    vuelo.estado === "procesando" && tilesTotal > 0;
+  const pctTiles = tilesTotal > 0
+    ? Math.round((tilesHechos / tilesTotal) * 100)
+    : 0;
+
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between text-sm">
@@ -17,6 +25,21 @@ export function ProcessingStatus({ vuelo }: { vuelo: Vuelo }) {
         </span>
       </div>
       <Progress value={vuelo.porcentaje_procesado} />
+
+      {mostrarTiles && (
+        <div className="space-y-2 pt-2">
+          <div className="flex items-center justify-between text-sm">
+            <span className="text-muted-foreground">
+              Procesando imagen grande por tiles
+            </span>
+            <span className="text-muted-foreground">
+              {tilesHechos.toLocaleString()} / {tilesTotal.toLocaleString()}{" "}
+              tiles · {pctTiles}%
+            </span>
+          </div>
+          <Progress value={pctTiles} />
+        </div>
+      )}
     </div>
   );
 }

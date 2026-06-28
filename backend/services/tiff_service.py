@@ -735,6 +735,68 @@ class TiffService:
         }
 
     @staticmethod
+    def iter_tiles_para_inferencia(
+        tiff_path: str,
+        tile_size: int = 640,
+        overlap_px: int = 64,
+        saltar_vacios: bool = True,
+    ):
+        """Recorre el GeoTIFF por ventanas y va devolviendo cada tile en memoria.
+
+        A diferencia de ``generar_tiles`` NO escribe miles de JPG a disco: lee
+        una ventana, la convierte a RGB y la entrega. Pensado para inferencia en
+        streaming sobre TIFF gigapíxel (memoria acotada, sin volcar tiles).
+
+        Devuelve un generador de tuplas
+        ``(indice, total, x_off, y_off, img_rgb)`` por CADA ventana (incluso las
+        omitidas, con ``img_rgb=None``), para poder reportar progreso real que
+        llega al 100%.
+        """
+        paso = tile_size - overlap_px
+
+        with rasterio.open(tiff_path) as src:
+            total_cols = max(1, (src.width + paso - 1) // paso)
+            total_rows = max(1, (src.height + paso - 1) // paso)
+            total = total_rows * total_cols
+            indice = 0
+
+            for row in range(total_rows):
+                for col in range(total_cols):
+                    indice += 1
+                    x_off = col * paso
+                    y_off = row * paso
+                    w = min(tile_size, src.width - x_off)
+                    h = min(tile_size, src.height - y_off)
+                    if w <= 0 or h <= 0:
+                        yield indice, total, x_off, y_off, None
+                        continue
+
+                    window = Window(x_off, y_off, w, h)
+                    data = src.read(window=window)
+                    img_rgb = TiffService._bandas_a_rgb(data, src.count)
+                    if img_rgb is None:
+                        yield indice, total, x_off, y_off, None
+                        continue
+
+                    if (
+                        img_rgb.shape[0] < tile_size
+                        or img_rgb.shape[1] < tile_size
+                    ):
+                        padded = np.zeros(
+                            (tile_size, tile_size, 3), dtype=np.uint8
+                        )
+                        padded[: img_rgb.shape[0], : img_rgb.shape[1]] = img_rgb
+                        img_rgb = padded
+
+                    if saltar_vacios:
+                        negro = np.sum(img_rgb == 0) / img_rgb.size
+                        if negro > 0.8:
+                            yield indice, total, x_off, y_off, None
+                            continue
+
+                    yield indice, total, x_off, y_off, img_rgb
+
+    @staticmethod
     def _bandas_a_rgb(
         data: np.ndarray, num_bandas: int, preview: bool = False
     ):

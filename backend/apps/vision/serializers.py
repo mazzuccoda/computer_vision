@@ -136,6 +136,8 @@ class VueloSerializer(serializers.ModelSerializer):
             "total_imagenes",
             "imagenes_procesadas",
             "porcentaje_procesado",
+            "tiles_total",
+            "tiles_procesados",
             "creado_en",
             "actualizado_en",
         ]
@@ -147,6 +149,8 @@ class VueloSerializer(serializers.ModelSerializer):
             "total_imagenes",
             "imagenes_procesadas",
             "porcentaje_procesado",
+            "tiles_total",
+            "tiles_procesados",
             "creado_en",
             "actualizado_en",
         ]

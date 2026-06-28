@@ -92,6 +92,11 @@ export const vuelosService = {
     await api.post(`/vuelos/${id}/process/`, reprocesar ? { reprocesar: true } : {});
   },
 
+  async cancel(id: number): Promise<Vuelo> {
+    const { data } = await api.post<Vuelo>(`/vuelos/${id}/cancel/`);
+    return data;
+  },
+
   async results(id: number): Promise<VueloResults> {
     const { data } = await api.get<VueloResults>(`/vuelos/${id}/results/`);
     return data;

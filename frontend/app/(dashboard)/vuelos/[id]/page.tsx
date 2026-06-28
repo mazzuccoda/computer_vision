@@ -1,6 +1,14 @@
 "use client";
 
-import { ArrowLeft, Download, Map, Play, RotateCcw, Trash2 } from "lucide-react";
+import {
+  ArrowLeft,
+  Download,
+  Map,
+  Play,
+  RotateCcw,
+  Trash2,
+  XCircle,
+} from "lucide-react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { toast } from "sonner";
@@ -26,6 +34,7 @@ import { ImageUploader } from "@/components/vuelos/ImageUploader";
 import { ProcessingStatus } from "@/components/vuelos/ProcessingStatus";
 import VisorDetecciones from "@/components/vuelos/VisorDetecciones";
 import {
+  useCancelVuelo,
   useDeleteVuelo,
   useProcessVuelo,
   useVuelo,
@@ -43,6 +52,7 @@ export default function VueloDetallePage() {
   const { data: vuelo, isLoading } = useVuelo(id);
   const { data: imagenes } = useVueloImagenes(id, vuelo?.estado);
   const processVuelo = useProcessVuelo();
+  const cancelVuelo = useCancelVuelo();
   const deleteVuelo = useDeleteVuelo();
 
   if (isLoading) return <LoadingSpinner />;
@@ -70,6 +80,22 @@ export default function VueloDetallePage() {
       toast.success("Reprocesamiento iniciado con el modelo activo");
     } catch {
       toast.error("No se pudo reprocesar el vuelo");
+    }
+  }
+
+  async function handleCancel() {
+    if (
+      !window.confirm(
+        "Esto detiene el procesamiento en curso. Las detecciones ya " +
+          "guardadas se conservan. ¿Continuar?",
+      )
+    )
+      return;
+    try {
+      await cancelVuelo.mutateAsync(id);
+      toast.success("Procesamiento cancelado");
+    } catch {
+      toast.error("No se pudo cancelar el procesamiento");
     }
   }
 
@@ -138,6 +164,17 @@ export default function VueloDetallePage() {
             <Play className="mr-2 h-4 w-4" />
             Procesar vuelo
           </Button>
+          {vuelo.estado === "procesando" && (
+            <Button
+              variant="outline"
+              className="text-red-600 hover:text-red-700"
+              onClick={handleCancel}
+              disabled={cancelVuelo.isPending}
+            >
+              <XCircle className="mr-2 h-4 w-4" />
+              Cancelar procesamiento
+            </Button>
+          )}
           {vuelo.estado === "completado" && (
             <>
               <Button asChild variant="outline">

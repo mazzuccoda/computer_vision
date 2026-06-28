@@ -63,6 +63,9 @@ class Vuelo(models.Model):
     # tiles: la barra por imagen quedaría en 0% durante horas. Nulos = no aplica.
     tiles_total = models.IntegerField(null=True, blank=True)
     tiles_procesados = models.IntegerField(null=True, blank=True)
+    # Id de la tarea Celery del procesamiento en curso, para poder cancelarla
+    # (matar el proceso) sin reiniciar el worker.
+    celery_task_id = models.CharField(max_length=255, blank=True, default="")
     ubicacion = gis_models.PointField(
         null=True,
         blank=True,

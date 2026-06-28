@@ -242,15 +242,59 @@ class VueloViewSet(viewsets.ModelViewSet):
         # Reset progress counters before (re)processing.
         vuelo.estado = Vuelo.Estado.PENDIENTE
         vuelo.imagenes_procesadas = vuelo.imagenes.filter(procesada=True).count()
-        vuelo.save(
-            update_fields=["estado", "imagenes_procesadas", "total_plantas"]
-        )
+        vuelo.tiles_total = None
+        vuelo.tiles_procesados = None
+        vuelo.save(update_fields=[
+            "estado", "imagenes_procesadas", "total_plantas",
+            "tiles_total", "tiles_procesados",
+        ])
 
-        process_vuelo_task.delay(vuelo.id)
+        async_result = process_vuelo_task.delay(vuelo.id)
+        vuelo.celery_task_id = async_result.id
+        vuelo.save(update_fields=["celery_task_id"])
         return Response(
             {"detail": "Procesamiento iniciado.", "vuelo_id": vuelo.id},
             status=status.HTTP_202_ACCEPTED,
         )
+
+    @action(detail=True, methods=["post"], url_path="cancel")
+    def cancel(self, request, pk=None):
+        """Cancela el procesamiento en curso: mata la tarea de Celery (sin
+        reiniciar el worker) y deja el vuelo en 'pendiente' para poder
+        reprocesarlo. Las detecciones ya guardadas se conservan."""
+        vuelo = self.get_object()
+        if vuelo.estado != Vuelo.Estado.PROCESANDO:
+            return Response(
+                {"detail": "El vuelo no está procesando."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if vuelo.celery_task_id:
+            try:
+                from config.celery import app
+
+                app.control.revoke(
+                    vuelo.celery_task_id, terminate=True, signal="SIGKILL"
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "No se pudo revocar la tarea Celery %s del vuelo %s",
+                    vuelo.celery_task_id,
+                    vuelo.pk,
+                )
+
+        vuelo.estado = Vuelo.Estado.PENDIENTE
+        vuelo.celery_task_id = ""
+        vuelo.tiles_total = None
+        vuelo.tiles_procesados = None
+        vuelo.imagenes_procesadas = vuelo.imagenes.filter(
+            procesada=True
+        ).count()
+        vuelo.save(update_fields=[
+            "estado", "celery_task_id", "tiles_total",
+            "tiles_procesados", "imagenes_procesadas",
+        ])
+        return Response(VueloSerializer(vuelo, context={"request": request}).data)
 
     @action(detail=True, methods=["get"], url_path="results")
     def results(self, request, pk=None):

@@ -63,6 +63,17 @@ export function useProcessVuelo() {
   });
 }
 
+export function useCancelVuelo() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => vuelosService.cancel(id),
+    onSuccess: (_, id) => {
+      qc.invalidateQueries({ queryKey: ["vuelo", id] });
+      qc.invalidateQueries({ queryKey: ["vuelos"] });
+    },
+  });
+}
+
 export function useUploadImages() {
   const qc = useQueryClient();
   return useMutation({

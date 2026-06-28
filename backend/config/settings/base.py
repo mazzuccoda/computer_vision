@@ -148,6 +148,11 @@ YOLO_IOU_TILES = config("YOLO_IOU_TILES", default=0.45, cast=float)
 # IoS (intersección sobre el área del box más chico): suprime boxes anidados
 # que el IoU no elimina. 0 desactiva; más bajo = más agresivo. Rango útil ~0.5–0.7.
 YOLO_IOS_DEDUP = config("YOLO_IOS_DEDUP", default=0.6, cast=float)
+# Distancia máxima (px) entre centros para considerar dos detecciones la misma
+# planta, aunque se solapen poco. Colapsa varias cajas sobre el mismo árbol que
+# el IoU/IoS no fusionan. 0 = desactivado. Útil ~30–60 px (menor a la distancia
+# de plantación para no fusionar plantas distintas).
+YOLO_DIST_DEDUP_PX = config("YOLO_DIST_DEDUP_PX", default=0.0, cast=float)
 # Test-Time Augmentation: mejora el recall (~2-3x más lento). Activar con True.
 YOLO_TTA = config("YOLO_TTA", default=False, cast=bool)
 # NMS agnóstico de clase (suprime solapamientos entre clases distintas).

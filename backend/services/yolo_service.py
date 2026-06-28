@@ -34,6 +34,15 @@ NMS_IOU_TILES = getattr(settings, "YOLO_IOU_TILES", 0.45)
 # agresivo (puede fusionar plantas muy juntas).
 NMS_IOS_DEDUP = getattr(settings, "YOLO_IOS_DEDUP", 0.6)
 
+# Distancia máxima (px, en coordenadas nativas de la imagen) entre los CENTROS
+# de dos detecciones de la misma clase para considerarlas la misma planta. A
+# diferencia del IoU/IoS (que necesitan solapamiento), esto colapsa varias cajas
+# de tamaño parecido sobre el mismo árbol que se solapan poco. Pensado para
+# huertos con separación regular: poner un valor menor a la distancia de
+# plantación (p. ej. 30-60 px). 0 = desactivado (default, para no fusionar
+# plantas distintas sin querer).
+NMS_DIST_DEDUP = getattr(settings, "YOLO_DIST_DEDUP_PX", 0.0)
+
 # Test-Time Augmentation: infiere sobre variantes (flips/escala) y combina;
 # mejora el recall (menos plantas no detectadas) a costa de ~2-3x de tiempo.
 TTA_INFERENCIA = getattr(settings, "YOLO_TTA", False)
@@ -186,7 +195,10 @@ class YOLOService:
         """
         results = self._inferir(image_path, confidence)
         return self._nms(
-            self._parsear_resultados(results), NMS_IOU_TILES, NMS_IOS_DEDUP
+            self._parsear_resultados(results),
+            NMS_IOU_TILES,
+            NMS_IOS_DEDUP,
+            NMS_DIST_DEDUP,
         )
 
     def _detecciones_tiff_por_tiles(
@@ -213,7 +225,10 @@ class YOLOService:
         )
 
         dedup = _GrillaDedup(
-            NMS_IOU_TILES, NMS_IOS_DEDUP, celda=TILE_SIZE_INFERENCIA
+            NMS_IOU_TILES,
+            NMS_IOS_DEDUP,
+            NMS_DIST_DEDUP,
+            celda=TILE_SIZE_INFERENCIA,
         )
         tiles_con_datos = 0
         crudas = 0
@@ -267,14 +282,16 @@ class YOLOService:
         detecciones: list[dict],
         iou_threshold: float,
         ios_threshold: float = 0.0,
+        dist_threshold: float = 0.0,
     ) -> list[dict]:
         """Non-Max Suppression por clase para fusionar detecciones duplicadas.
 
         Suprime un box (de menor confianza) si contra alguno ya conservado de la
         misma clase: su IoU >= ``iou_threshold`` (solapamiento clásico entre
-        tiles) O su IoS >= ``ios_threshold`` (queda mayormente contenido en el
-        otro, p. ej. boxes anidados sobre la misma planta). Conserva el de mayor
-        confianza.
+        tiles), su IoS >= ``ios_threshold`` (queda mayormente contenido en el
+        otro, p. ej. boxes anidados sobre la misma planta) O la distancia entre
+        sus centros <= ``dist_threshold`` px (misma planta detectada con varias
+        cajas que se solapan poco). Conserva el de mayor confianza.
         """
         if not detecciones:
             return []
@@ -283,7 +300,9 @@ class YOLOService:
         conservadas: list[dict] = []
         for det in ordenadas:
             duplicado = any(
-                _es_duplicado(det, keep, iou_threshold, ios_threshold)
+                _es_duplicado(
+                    det, keep, iou_threshold, ios_threshold, dist_threshold
+                )
                 for keep in conservadas
             )
             if not duplicado:
@@ -319,13 +338,30 @@ def _interseccion(a: dict, b: dict) -> float:
     return iw * ih
 
 
+def _centro(d: dict) -> tuple[float, float]:
+    return (
+        (d["x_min"] + d["x_max"]) / 2.0,
+        (d["y_min"] + d["y_max"]) / 2.0,
+    )
+
+
 def _es_duplicado(
-    a: dict, b: dict, iou_threshold: float, ios_threshold: float
+    a: dict,
+    b: dict,
+    iou_threshold: float,
+    ios_threshold: float,
+    dist_threshold: float = 0.0,
 ) -> bool:
-    """True si ``a`` y ``b`` (misma clase) son la misma detección: por IoU
-    (solapamiento clásico) o por IoS (uno contenido en el otro)."""
+    """True si ``a`` y ``b`` (misma clase) son la misma detección: por distancia
+    entre centros (no requiere solapamiento), por IoU (solapamiento clásico) o
+    por IoS (uno contenido en el otro)."""
     if a["clase"] != b["clase"]:
         return False
+    if dist_threshold > 0:
+        ax, ay = _centro(a)
+        bx, by = _centro(b)
+        if (ax - bx) ** 2 + (ay - by) ** 2 <= dist_threshold * dist_threshold:
+            return True
     inter = _interseccion(a, b)
     if inter <= 0:
         return False
@@ -349,25 +385,34 @@ class _GrillaDedup:
     Conserva siempre la de mayor confianza.
     """
 
-    def __init__(self, iou_threshold: float, ios_threshold: float, celda: int):
+    def __init__(
+        self,
+        iou_threshold: float,
+        ios_threshold: float,
+        dist_threshold: float,
+        celda: int,
+    ):
         self.iou_threshold = iou_threshold
         self.ios_threshold = ios_threshold
+        self.dist_threshold = dist_threshold
         self.celda = max(1, int(celda))
         self._grilla: dict[tuple[int, int], list[int]] = {}
         self._dets: list[dict | None] = []
 
-    def _celdas(self, det: dict):
-        cx0 = int(det["x_min"] // self.celda)
-        cx1 = int(det["x_max"] // self.celda)
-        cy0 = int(det["y_min"] // self.celda)
-        cy1 = int(det["y_max"] // self.celda)
+    def _celdas(self, det: dict, margen: float = 0.0):
+        cx0 = int((det["x_min"] - margen) // self.celda)
+        cx1 = int((det["x_max"] + margen) // self.celda)
+        cy0 = int((det["y_min"] - margen) // self.celda)
+        cy1 = int((det["y_max"] + margen) // self.celda)
         for cx in range(cx0, cx1 + 1):
             for cy in range(cy0, cy1 + 1):
                 yield (cx, cy)
 
     def add(self, det: dict) -> None:
         candidatos: set[int] = set()
-        for celda in self._celdas(det):
+        # Al buscar candidatos se infla la ventana por dist_threshold: un
+        # duplicado por distancia puede caer en una celda contigua sin solaparse.
+        for celda in self._celdas(det, margen=self.dist_threshold):
             candidatos.update(self._grilla.get(celda, ()))
 
         solapados: list[int] = []
@@ -376,7 +421,11 @@ class _GrillaDedup:
             if keep is None:
                 continue
             if _es_duplicado(
-                det, keep, self.iou_threshold, self.ios_threshold
+                det,
+                keep,
+                self.iou_threshold,
+                self.ios_threshold,
+                self.dist_threshold,
             ):
                 # Si ya hay una igual o mejor, descartamos la nueva.
                 if keep["confianza"] >= det["confianza"]:

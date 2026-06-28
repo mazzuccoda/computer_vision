@@ -350,45 +350,48 @@ class VueloViewSet(viewsets.ModelViewSet):
         """
         Devuelve {deteccion_id: [west, south, east, north]} proyectando las
         esquinas de cada bounding box píxel→WGS84 con el transform/CRS del
-        GeoTIFF de su imagen. Abre cada GeoTIFF una sola vez.
-        """
-        referencers = {}
-        bboxes = {}
-        for det in detecciones:
-            imagen = det.imagen
-            if imagen.id not in referencers:
-                ref = None
-                nombre = (
-                    imagen.nombre_original or imagen.archivo.name or ""
-                ).lower()
-                if nombre.endswith((".tif", ".tiff")):
-                    try:
-                        ref = GeoService.referencer_desde_tiff(
-                            imagen.archivo.path
-                        )
-                    except Exception:  # noqa: BLE001
-                        ref = None
-                referencers[imagen.id] = ref
+        GeoTIFF de su imagen.
 
-            ref = referencers[imagen.id]
-            if ref is None:
+        Proyecta TODAS las esquinas de cada imagen en una sola llamada
+        vectorizada (no punto a punto): con decenas de miles de detecciones
+        esto baja de ~1 min a ~1 s y es lo que destrababa el mapa.
+        """
+        from collections import defaultdict
+
+        por_imagen = defaultdict(list)
+        for det in detecciones:
+            por_imagen[det.imagen].append(det)
+
+        bboxes = {}
+        for imagen, dets in por_imagen.items():
+            nombre = (
+                imagen.nombre_original or imagen.archivo.name or ""
+            ).lower()
+            if not nombre.endswith((".tif", ".tiff")):
                 continue
-            esquinas = [
-                ref(det.x_min, det.y_min),
-                ref(det.x_max, det.y_min),
-                ref(det.x_max, det.y_max),
-                ref(det.x_min, det.y_max),
-            ]
-            puntos = [p for p in esquinas if p]
-            if len(puntos) == 4:
-                lons = [p.x for p in puntos]
-                lats = [p.y for p in puntos]
-                bboxes[det.id] = [
-                    min(lons),
-                    min(lats),
-                    max(lons),
-                    max(lats),
-                ]
+
+            xs: list[float] = []
+            ys: list[float] = []
+            for det in dets:
+                xs += [det.x_min, det.x_max, det.x_max, det.x_min]
+                ys += [det.y_min, det.y_min, det.y_max, det.y_max]
+
+            try:
+                lons, lats = GeoService.proyectar_pixeles_desde_tiff(
+                    imagen.archivo.path, xs, ys
+                )
+            except Exception:  # noqa: BLE001
+                lons = lats = None
+            if not lons:
+                continue
+
+            for i, det in enumerate(dets):
+                j = i * 4
+                dl = lons[j:j + 4]
+                da = lats[j:j + 4]
+                if len(dl) < 4 or len(da) < 4:
+                    continue
+                bboxes[det.id] = [min(dl), min(da), max(dl), max(da)]
         return bboxes
 
     @action(detail=True, methods=["get"], url_path="raster-overlay")

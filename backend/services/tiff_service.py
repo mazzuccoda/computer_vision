@@ -1,3 +1,4 @@
+import hashlib
 import io
 import json
 import logging
@@ -266,7 +267,25 @@ class TiffService:
         Returns:
             (rgb HxWx3 uint8, escala) donde ``escala = out/native`` (≤ 1.0),
             o None si no se pudo leer.
+
+        La versión decimada se cachea en disco (no cambia para un TIFF dado):
+        leer/decimar un GeoTIFF gigapíxel cuesta decenas de segundos, así que
+        el visor/editor de la ortofoto reusa el cache en vez de releer el raster
+        en cada request (p. ej. al mover el slider de umbral).
         """
+        cache = TiffService._ruta_base_decimado(tiff_path, max_dim)
+        try:
+            if cache.exists() and (
+                os.path.getmtime(cache) >= os.path.getmtime(tiff_path)
+            ):
+                escala = TiffService._escala_decimado(tiff_path, max_dim)
+                if escala is not None:
+                    with Image.open(cache) as im:
+                        rgb = np.array(im.convert("RGB"))
+                    return rgb, escala
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"No se pudo leer base decimada cacheada: {e}")
+
         try:
             with rasterio.open(tiff_path) as src:
                 lado = max(src.width, src.height)
@@ -282,9 +301,37 @@ class TiffService:
             rgb = TiffService._bandas_a_rgb(data, bandas, preview=True)
             if rgb is None:
                 return None
-            return rgb, escala
         except Exception as e:  # noqa: BLE001
             logger.warning(f"No se pudo leer RGB decimado del TIFF: {e}")
+            return None
+
+        try:
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            tmp = cache.with_suffix(".jpg.tmp")
+            Image.fromarray(rgb).save(tmp, format="JPEG", quality=92)
+            tmp.replace(cache)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"No se pudo cachear la base decimada del TIFF: {e}")
+
+        return rgb, escala
+
+    @staticmethod
+    def _ruta_base_decimado(tiff_path: str, max_dim: int) -> Path:
+        """Ruta del JPG cacheado de la versión decimada de un GeoTIFF."""
+        clave = f"{os.path.abspath(tiff_path)}|{max_dim}".encode()
+        nombre = hashlib.md5(clave).hexdigest()
+        return MEDIA_ROOT / "annotated_base" / f"{nombre}.jpg"
+
+    @staticmethod
+    def _escala_decimado(tiff_path: str, max_dim: int) -> float | None:
+        """Recalcula la escala out/native leyendo SOLO los metadatos del TIFF
+        (rápido), para reusar la base decimada cacheada sin releer el raster."""
+        try:
+            with rasterio.open(tiff_path) as src:
+                lado = max(src.width, src.height)
+                return min(1.0, max_dim / lado) if lado else 1.0
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"No se pudo calcular escala decimado: {e}")
             return None
 
     # ------------------------------------------------------------------

@@ -37,6 +37,11 @@ export default function VisorDetecciones({ imagenes }: Props) {
   const [mostrarEtiquetas, setMostrarEtiquetas] = useState(true);
   const [descargando, setDescargando] = useState(false);
   const [editando, setEditando] = useState(false);
+  const [baseImg, setBaseImg] = useState<{
+    img: HTMLImageElement;
+    escala: number;
+  } | null>(null);
+  const [cargandoImg, setCargandoImg] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   const imagenActiva = imagenes[idx] ?? null;
@@ -125,18 +130,29 @@ export default function VisorDetecciones({ imagenes }: Props) {
     []
   );
 
-  // ── Cargar imagen y redibujar ─────────────────────────────────────────────
+  // ── Cargar la imagen base UNA sola vez por imagen ─────────────────────────
+  // El JPG base del TIFF (gigapíxel) tarda en generarse; antes se re-pedía en
+  // CADA cambio del slider/etiquetas y la pantalla se colgaba. Se carga una vez
+  // y el redibujado (filtrar por umbral) es 100% en el cliente.
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas || !imagenActiva || cargandoDets) return;
+    if (!imagenActiva) {
+      setBaseImg(null);
+      return;
+    }
+    let cancelado = false;
+    setBaseImg(null);
+    setCargandoImg(true);
 
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
+    const finalizar = (img: HTMLImageElement, escala: number) => {
+      if (cancelado) return;
+      setBaseImg({ img, escala });
+      setCargandoImg(false);
+    };
 
     const esTiff = /\.(tif|tiff)$/i.test(imagenActiva.nombre_original ?? "");
 
     if (esTiff) {
-      // TIFF: el navegador no los renderiza; pedir JPG base sin boxes al backend
+      // TIFF: el navegador no los renderiza; pedir el JPG base sin boxes
       // (min_confidence=1 → sin boxes) y dibujar los boxes encima en canvas.
       api
         .get(`/imagenes/${imagenActiva.id}/annotated/?min_confidence=1`, {
@@ -147,41 +163,51 @@ export default function VisorDetecciones({ imagenes }: Props) {
           const url = URL.createObjectURL(res.data);
           const img = new Image();
           img.onload = () => {
-            dibujar(
-              ctx,
-              img,
-              detecciones,
-              minConfianza,
-              mostrarEtiquetas,
-              escala
-            );
             URL.revokeObjectURL(url);
+            finalizar(img, escala);
           };
-          img.onerror = () => URL.revokeObjectURL(url);
+          img.onerror = () => {
+            URL.revokeObjectURL(url);
+            if (!cancelado) setCargandoImg(false);
+          };
           img.src = url;
         })
         .catch((err) => {
           console.error("Error cargando TIFF via /annotated/:", err);
+          if (!cancelado) setCargandoImg(false);
         });
     } else {
-      // JPG / PNG: cargar directamente en canvas
+      // JPG / PNG: cargar directamente
       const img = new Image();
       img.crossOrigin = "anonymous";
-      img.onload = () =>
-        dibujar(ctx, img, detecciones, minConfianza, mostrarEtiquetas);
+      img.onload = () => finalizar(img, 1);
       img.onerror = () => {
         console.warn("No se pudo cargar la imagen:", imagenActiva.archivo);
+        if (!cancelado) setCargandoImg(false);
       };
       img.src = imagenActiva.archivo;
     }
-  }, [
-    imagenActiva,
-    detecciones,
-    minConfianza,
-    mostrarEtiquetas,
-    cargandoDets,
-    dibujar,
-  ]);
+
+    return () => {
+      cancelado = true;
+    };
+  }, [imagenActiva]);
+
+  // ── Redibujar boxes (filtro por umbral) sin re-pedir la imagen ────────────
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !baseImg) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    dibujar(
+      ctx,
+      baseImg.img,
+      detecciones,
+      minConfianza,
+      mostrarEtiquetas,
+      baseImg.escala
+    );
+  }, [baseImg, detecciones, minConfianza, mostrarEtiquetas, dibujar]);
 
   // ── Descargar JPG anotado generado por OpenCV ────────────────────────────
   const descargarJpg = useCallback(async () => {
@@ -284,13 +310,13 @@ export default function VisorDetecciones({ imagenes }: Props) {
         {/* Canvas */}
         <div className="p-3 space-y-3">
           <div className="relative bg-black rounded overflow-hidden">
-            {cargandoDets && (
+            {(cargandoDets || cargandoImg) && (
               <div
                 className="absolute inset-0 flex items-center justify-center
                            bg-black/40 z-10"
               >
                 <span className="text-xs text-white/70">
-                  Cargando detecciones…
+                  {cargandoImg ? "Cargando imagen…" : "Cargando detecciones…"}
                 </span>
               </div>
             )}

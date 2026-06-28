@@ -141,6 +141,9 @@ MODELS_PATH = config("MODELS_PATH", default=str(BASE_DIR / "models"))
 YOLO_IOU_INFERENCIA = config("YOLO_IOU_INFERENCIA", default=0.5, cast=float)
 # IoU del NMS entre tiles vecinos (deduplica bordes en TIFF troceado).
 YOLO_IOU_TILES = config("YOLO_IOU_TILES", default=0.45, cast=float)
+# IoS (intersección sobre el área del box más chico): suprime boxes anidados
+# que el IoU no elimina. 0 desactiva; más bajo = más agresivo. Rango útil ~0.5–0.7.
+YOLO_IOS_DEDUP = config("YOLO_IOS_DEDUP", default=0.6, cast=float)
 # Test-Time Augmentation: mejora el recall (~2-3x más lento). Activar con True.
 YOLO_TTA = config("YOLO_TTA", default=False, cast=bool)
 # NMS agnóstico de clase (suprime solapamientos entre clases distintas).

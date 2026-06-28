@@ -42,6 +42,10 @@ TTA_INFERENCIA = getattr(settings, "YOLO_TTA", False)
 # (útil si una misma planta se detecta como 'planta' y otra clase a la vez).
 AGNOSTIC_NMS = getattr(settings, "YOLO_AGNOSTIC_NMS", False)
 
+# Confianza mínima por defecto: descarta detecciones flojas (suelen ser cajas
+# duplicadas sobre la misma planta). Configurable por env sin redeploy.
+CONFIDENCE_INFERENCIA = getattr(settings, "YOLO_CONFIDENCE", 0.5)
+
 
 class YOLOService:
     """Carga el modelo YOLO activo seleccionado desde la base de datos."""
@@ -126,7 +130,7 @@ class YOLOService:
     def process_image_with_yolo(
         self,
         image_path: str,
-        confidence: float = 0.5,
+        confidence: float | None = None,
         progress_callback=None,
     ) -> dict:
         """Procesa una imagen y retorna detecciones.
@@ -140,6 +144,8 @@ class YOLOService:
         detecciones). ``progress_callback(procesados, total)`` se invoca durante
         el recorrido del TIFF para reportar avance por tile.
         """
+        if confidence is None:
+            confidence = CONFIDENCE_INFERENCIA
         ext = Path(image_path).suffix.lower()
         try:
             if ext in TIFF_EXTENSIONS:

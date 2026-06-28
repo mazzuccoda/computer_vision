@@ -22,6 +22,15 @@ x-backend-env: &backend-env
   MEDIA_ROOT: ${MEDIA_ROOT:-/app/media}
   MODELS_PATH: ${MODELS_PATH:-/app/models}
 
+  # Ajuste de detección (NMS) sin reconstruir imagen: editar en el .env del server.
+  YOLO_IOU_INFERENCIA: ${YOLO_IOU_INFERENCIA:-0.5}
+  YOLO_IOU_TILES: ${YOLO_IOU_TILES:-0.45}
+  YOLO_IOS_DEDUP: ${YOLO_IOS_DEDUP:-0.6}
+  YOLO_TTA: ${YOLO_TTA:-False}
+  YOLO_AGNOSTIC_NMS: ${YOLO_AGNOSTIC_NMS:-False}
+  YOLO_TILE_SIZE: ${YOLO_TILE_SIZE:-640}
+  YOLO_TILE_OVERLAP: ${YOLO_TILE_OVERLAP:-64}
+
   DEMO_USER: ${DEMO_USER:-admin}
   DEMO_PASSWORD: ${DEMO_PASSWORD:-admin12345}
   DEMO_EMAIL: ${DEMO_EMAIL:-admin@example.com}

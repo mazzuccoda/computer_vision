@@ -327,6 +327,79 @@ class VueloViewSet(viewsets.ModelViewSet):
             }
         )
 
+    @action(detail=True, methods=["post"], url_path="rededuplicar")
+    def rededuplicar(self, request, pk=None):
+        """Re-aplica el dedup geométrico (IoU/IoS/distancia entre centros) sobre
+        las detecciones YA guardadas del vuelo, SIN reinferir el TIFF. Sirve para
+        afinar la superposición al instante (segundos) en vez de reprocesar horas
+        en CPU. Acepta overrides opcionales en el body: ``iou``, ``ios``,
+        ``dist`` (px); si no se pasan usa los valores de entorno (settings).
+        Conserva siempre la detección de mayor confianza. Recalcula los conteos.
+        """
+        from services.yolo_service import (
+            NMS_DIST_DEDUP,
+            NMS_IOS_DEDUP,
+            NMS_IOU_TILES,
+            TILE_SIZE_INFERENCIA,
+            _GrillaDedup,
+        )
+
+        vuelo = self.get_object()
+        if vuelo.estado == Vuelo.Estado.PROCESANDO:
+            return Response(
+                {"detail": "El vuelo se está procesando; esperá a que termine."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        def _num(nombre, default):
+            val = request.data.get(nombre)
+            if val in (None, ""):
+                return default
+            try:
+                return max(0.0, float(val))
+            except (TypeError, ValueError):
+                return default
+
+        iou = _num("iou", NMS_IOU_TILES)
+        ios = _num("ios", NMS_IOS_DEDUP)
+        dist = _num("dist", NMS_DIST_DEDUP)
+
+        total_antes = 0
+        a_borrar: list[int] = []
+        for imagen in vuelo.imagenes.all():
+            dets = list(
+                imagen.detecciones.all().values(
+                    "id", "x_min", "y_min", "x_max", "y_max", "clase", "confianza"
+                )
+            )
+            total_antes += len(dets)
+            grilla = _GrillaDedup(iou, ios, dist, celda=TILE_SIZE_INFERENCIA)
+            for d in dets:
+                grilla.add(dict(d))
+            keep_ids = {d["id"] for d in grilla.resultado()}
+            a_borrar.extend(d["id"] for d in dets if d["id"] not in keep_ids)
+            imagen.conteo_plantas = len(keep_ids)
+            imagen.save(update_fields=["conteo_plantas"])
+
+        eliminadas = 0
+        for i in range(0, len(a_borrar), 5000):
+            chunk = a_borrar[i:i + 5000]
+            eliminadas += Deteccion.objects.filter(id__in=chunk).delete()[0]
+
+        vuelo.total_plantas = (
+            vuelo.imagenes.aggregate(total=Sum("conteo_plantas"))["total"] or 0
+        )
+        vuelo.save(update_fields=["total_plantas"])
+
+        return Response(
+            {
+                "eliminadas": eliminadas,
+                "total_antes": total_antes,
+                "total_plantas": vuelo.total_plantas,
+                "parametros": {"iou": iou, "ios": ios, "dist": dist},
+            }
+        )
+
     @action(detail=True, methods=["post"], url_path="cancel")
     def cancel(self, request, pk=None):
         """Cancela el procesamiento en curso: mata la tarea de Celery (sin

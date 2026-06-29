@@ -86,6 +86,24 @@ export function useDeduplicarVuelo() {
   });
 }
 
+export function useRededuplicarVuelo() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      params,
+    }: {
+      id: number;
+      params?: { iou?: number; ios?: number; dist?: number };
+    }) => vuelosService.rededuplicar(id, params),
+    onSuccess: (_, { id }) => {
+      qc.invalidateQueries({ queryKey: ["vuelo", id] });
+      qc.invalidateQueries({ queryKey: ["vuelo-imagenes", id] });
+      qc.invalidateQueries({ queryKey: ["vuelos"] });
+    },
+  });
+}
+
 export function useUploadImages() {
   const qc = useQueryClient();
   return useMutation({

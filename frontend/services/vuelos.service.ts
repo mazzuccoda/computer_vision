@@ -107,6 +107,24 @@ export const vuelosService = {
     return data;
   },
 
+  async rededuplicar(
+    id: number,
+    params?: { iou?: number; ios?: number; dist?: number },
+  ): Promise<{
+    eliminadas: number;
+    total_antes: number;
+    total_plantas: number;
+    parametros: { iou: number; ios: number; dist: number };
+  }> {
+    const { data } = await api.post<{
+      eliminadas: number;
+      total_antes: number;
+      total_plantas: number;
+      parametros: { iou: number; ios: number; dist: number };
+    }>(`/vuelos/${id}/rededuplicar/`, params ?? {});
+    return data;
+  },
+
   async results(id: number): Promise<VueloResults> {
     const { data } = await api.get<VueloResults>(`/vuelos/${id}/results/`);
     return data;

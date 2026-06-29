@@ -2,6 +2,7 @@
 
 import {
   ArrowLeft,
+  Combine,
   CopyMinus,
   Download,
   Map,
@@ -12,6 +13,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
+import { useState } from "react";
 import { toast } from "sonner";
 
 import { LoadingSpinner } from "@/components/shared/LoadingSpinner";
@@ -22,6 +24,8 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   Table,
   TableBody,
@@ -39,6 +43,7 @@ import {
   useDeduplicarVuelo,
   useDeleteVuelo,
   useProcessVuelo,
+  useRededuplicarVuelo,
   useVuelo,
   useVueloImagenes,
 } from "@/hooks/useVuelos";
@@ -56,7 +61,12 @@ export default function VueloDetallePage() {
   const processVuelo = useProcessVuelo();
   const cancelVuelo = useCancelVuelo();
   const deduplicarVuelo = useDeduplicarVuelo();
+  const rededuplicarVuelo = useRededuplicarVuelo();
   const deleteVuelo = useDeleteVuelo();
+
+  const [iouThr, setIouThr] = useState("0.3");
+  const [iosThr, setIosThr] = useState("0.4");
+  const [distThr, setDistThr] = useState("60");
 
   if (isLoading) return <LoadingSpinner />;
   if (!vuelo) return <p className="text-muted-foreground">Vuelo no encontrado.</p>;
@@ -119,6 +129,34 @@ export default function VueloDetallePage() {
       );
     } catch {
       toast.error("No se pudieron quitar los duplicados");
+    }
+  }
+
+  async function handleRededuplicar() {
+    if (
+      !window.confirm(
+        "Re-deduplica las detecciones YA guardadas con estos umbrales " +
+          "(IoU / IoS / distancia). No reinfiere el TIFF: corre en segundos y " +
+          "borra las cajas redundantes. ¿Continuar?",
+      )
+    )
+      return;
+    try {
+      const r = await rededuplicarVuelo.mutateAsync({
+        id,
+        params: {
+          iou: iouThr === "" ? undefined : Number(iouThr),
+          ios: iosThr === "" ? undefined : Number(iosThr),
+          dist: distThr === "" ? undefined : Number(distThr),
+        },
+      });
+      toast.success(
+        `${r.eliminadas.toLocaleString()} cajas quitadas · ` +
+          `${r.total_plantas.toLocaleString()} plantas ` +
+          `(de ${r.total_antes.toLocaleString()})`,
+      );
+    } catch {
+      toast.error("No se pudo re-deduplicar");
     }
   }
 
@@ -259,6 +297,73 @@ export default function VueloDetallePage() {
           </Card>
         ))}
       </div>
+
+      {vuelo.estado !== "procesando" && vuelo.total_plantas > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">
+              Re-deduplicar (sin reprocesar)
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <p className="text-sm text-muted-foreground">
+              Vuelve a aplicar el dedup geométrico sobre las detecciones ya
+              guardadas con estos umbrales, en segundos y sin reinferir el TIFF.
+              Más bajo = más agresivo. Conserva la detección de mayor confianza.
+            </p>
+            <div className="flex flex-wrap items-end gap-4">
+              <div className="space-y-1">
+                <Label htmlFor="iou">IoU (solapamiento)</Label>
+                <Input
+                  id="iou"
+                  type="number"
+                  step="0.05"
+                  min="0"
+                  max="1"
+                  value={iouThr}
+                  onChange={(e) => setIouThr(e.target.value)}
+                  className="w-32"
+                />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="ios">IoS (caja anidada)</Label>
+                <Input
+                  id="ios"
+                  type="number"
+                  step="0.05"
+                  min="0"
+                  max="1"
+                  value={iosThr}
+                  onChange={(e) => setIosThr(e.target.value)}
+                  className="w-32"
+                />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="dist">Distancia centros (px)</Label>
+                <Input
+                  id="dist"
+                  type="number"
+                  step="5"
+                  min="0"
+                  value={distThr}
+                  onChange={(e) => setDistThr(e.target.value)}
+                  className="w-36"
+                />
+              </div>
+              <Button
+                variant="outline"
+                onClick={handleRededuplicar}
+                disabled={rededuplicarVuelo.isPending}
+              >
+                <Combine className="mr-2 h-4 w-4" />
+                {rededuplicarVuelo.isPending
+                  ? "Procesando…"
+                  : "Re-deduplicar"}
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {vuelo.estado === "completado" && imagenesProcesadas.length > 0 && (
         <VisorDetecciones vueloId={vuelo.id} imagenes={imagenesProcesadas} />
